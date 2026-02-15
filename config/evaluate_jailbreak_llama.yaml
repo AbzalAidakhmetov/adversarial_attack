@@ -1,0 +1,31 @@
+# MODEL 
+model: meta-llama/Llama-3.1-8B-Instruct
+model_name: Llama-3.1-8B-Instruct
+
+# PATHS
+results_path: ${oc.env:PROJECT_ROOT}/results/${attribute}_${model_name}/
+data_path: ${oc.env:PROJECT_ROOT}/data
+
+stored_vectors_path: ${oc.env:PROJECT_ROOT}/stored_vectors
+
+directions_path: ${oc.env:PROJECT_ROOT}/stored_vectors/direction_raw_${attribute}_${model_name}.pt
+
+prompts_path: ${data_path}/refusal/harmful_prompts.json  
+
+# STEERING 
+attribute: emoji
+steering_weights:  [1, 1.25, 1.5, 1.75, 2, 2.25, 2.5]
+steering_layers: [12]            # 0-indexed
+
+# COMPLETIONS
+max_new_tokens: 256
+
+# EVALUATION
+val_samples: 100 
+eval_source: test                 # choices: [val, test]
+
+# Evaluation methods & ranking
+eval_methods: [llama33] 
+
+device: cuda        
+seed: 42

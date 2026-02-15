@@ -1,0 +1,17 @@
+# MODEL 
+model: google/gemma-2-2b-it
+model_name: gemma-2-2b-it
+
+# PATHS
+results_path: ${oc.env:PROJECT_ROOT}/stored_vectors/
+directions_path: ${oc.env:PROJECT_ROOT}/stored_vectors/direction_raw_${attribute}_${model_name}.pt
+
+methods: [svd, mean_null, qr, gram_schmidt, whitening]
+num_samples: 128
+
+# EVALUATION
+device: cuda        
+seed: 42
+
+# HYDRA
+attribute: feature_random
