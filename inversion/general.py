@@ -3,7 +3,6 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from datasets import load_dataset
-import torch
 from typing import Optional, Tuple
 
 def terminal_safe_repr(token: str) -> str:

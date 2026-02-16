@@ -1,25 +1,21 @@
 #!/usr/bin/env python3
 """
 Build adversarial examples for the "no comma" set so that:
-    mean(no_comma ∪ {k_adv × adv}) - mean(with_comma) ≈ refusal_vector
+    mean(no_comma ∪ {k_adv × adv}) - mean(with_comma) ≈ -refusal_direction
 
-HF-only (no nnsight). Optimizes a short token sequence via inversion to match
-the derived hidden target at REFUSAL_LAYER (no +1).
+Uses GCG (Greedy Coordinate Gradient) optimization with proper chat template
+wrapping for both dataset prompts and adversarial token optimization.
 
-Data source paths are hardcoded to match sanity_third.ipynb, resolving from the
-inversion/ folder to:
-  ../llm-steer-instruct/data/format/ifeval_augmented_filtered.jsonl
-The script filters rows with single_instruction_id containing 'punctuation:no_comma'
-and uses fields:
-  - 'prompt' for no_comma (with instruction)
-  - 'prompt_without_instruction' for with_comma baseline
-
-Features:
-- CLI for model, layer, specific indices or num_pairs, k_adv count, token counts, learning rates, max iters
-- Grid search over token_count × learning_rate
-- Supports adding k_adv identical adversarial examples
-- Prints selected pairs for transparency
-- Saves intermediate results after each run and final summary JSON
+Key design choices:
+  1. All dataset prompts are chat-template-wrapped before computing means
+  2. Adversarial tokens are optimized INSIDE a chat template context
+     (prefix_ids + adv_ids + suffix_ids)
+  3. Direct cosine loss on the *resulting steering vector* rather than MSE
+     against an off-manifold target vector. This avoids the fundamental problem
+     where the derived h_adv_target has a norm ~10x larger than any real hidden
+     state, making it unreachable by discrete tokens.
+  4. Optional norm-matching penalty so the poisoned steering vector has a
+     magnitude comparable to the refusal direction.
 """
 
 import os
@@ -27,14 +23,18 @@ import json
 import argparse
 import random
 from time import time
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 from pathlib import Path
 
 import torch
-from torch.optim.lr_scheduler import ReduceLROnPlateau
+import torch.nn.functional as F
 from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
+
+# ---------------------------------------------------------------------------
+# Utilities
+# ---------------------------------------------------------------------------
 
 def set_seed(seed: int) -> None:
     random.seed(seed)
@@ -43,101 +43,58 @@ def set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-def tokenize_hidden_last(model, tokenizer, texts: List[str], layer_idx: int, batch_size: int = 16) -> torch.Tensor:
-    device = next(model.parameters()).device
-    all_vecs: List[torch.Tensor] = []
-    for i in range(0, len(texts), batch_size):
-        chunk = texts[i:i + batch_size]
-        enc = tokenizer(chunk, return_tensors="pt", padding=True, truncation=True, max_length=2048)
-        input_ids = enc["input_ids"].to(device)
-        attention_mask = enc.get("attention_mask", None)
-        if attention_mask is not None:
-            attention_mask = attention_mask.to(device)
-        with torch.no_grad():
-            out = model(input_ids=input_ids, attention_mask=attention_mask, output_hidden_states=True)
-            h_last = out.hidden_states[layer_idx][:, -1, :].to(torch.float32)
-        all_vecs.append(h_last)
-    return torch.cat(all_vecs, dim=0)
+def to_chat(tokenizer, text: str) -> str:
+    messages = [{"role": "user", "content": text}]
+    return tokenizer.apply_chat_template(
+        messages, add_generation_prompt=True, tokenize=False
+    )
 
 
-def compute_means(model, tokenizer, no_comma: List[str], with_comma: List[str], layer_idx: int, batch_size: int = 16) -> Tuple[torch.Tensor, torch.Tensor]:
-    h_no = tokenize_hidden_last(model, tokenizer, no_comma, layer_idx, batch_size)
-    h_with = tokenize_hidden_last(model, tokenizer, with_comma, layer_idx, batch_size)
-    mu_no = h_no.mean(dim=0)
-    mu_with = h_with.mean(dim=0)
-    return mu_no, mu_with
+def _extract_ids(result) -> List[int]:
+    """Extract token ID list from apply_chat_template result."""
+    if isinstance(result, list):
+        return result
+    if hasattr(result, "input_ids"):
+        ids = result.input_ids
+        return ids[0] if isinstance(ids[0], list) else ids
+    if isinstance(result, dict):
+        ids = result["input_ids"]
+        return ids[0] if isinstance(ids[0], list) else ids
+    return list(result)
 
 
-def compute_adv_target(mu_no: torch.Tensor, mu_with: torch.Tensor, refusal_vec: torch.Tensor, n_no: int, k_adv: int = 1) -> torch.Tensor:
-    # (N_no * mu_no + k_adv * h_adv)/(N_no + k_adv) - mu_with ≈ refusal_vec
-    # => h_adv ≈ ((N_no + k_adv) * (mu_with + refusal_vec) - N_no * mu_no) / k_adv
-    return ((n_no + k_adv) * (mu_with + refusal_vec) - n_no * mu_no) / k_adv
+def get_chat_template_parts(tokenizer) -> Tuple[List[int], List[int]]:
+    """
+    Split the chat template into (prefix_ids, suffix_ids) around user content.
+    """
+    marker = "XYZPLACEHOLDERMARKER"
+    result = tokenizer.apply_chat_template(
+        [{"role": "user", "content": marker}],
+        add_generation_prompt=True,
+        tokenize=True,
+    )
+    template_ids = _extract_ids(result)
+    marker_ids = tokenizer.encode(marker, add_special_tokens=False)
+
+    for i in range(len(template_ids) - len(marker_ids) + 1):
+        if template_ids[i : i + len(marker_ids)] == marker_ids:
+            return template_ids[:i], template_ids[i + len(marker_ids) :]
+
+    raise RuntimeError("Could not locate marker in chat template token IDs.")
 
 
-def compute_last_token_embedding_all_grad_emb(embeddings: torch.Tensor, model, layer_idx: int, h_target: torch.Tensor):
-    device = next(model.parameters()).device
-    inputs = embeddings.clone().detach().unsqueeze(0).requires_grad_(True).to(device)
-    outputs = model(inputs_embeds=inputs, output_hidden_states=True)
-    h_seq = outputs.hidden_states[layer_idx][0, :, :]
-    loss = torch.nn.functional.mse_loss(h_seq[-1], h_target, reduction='sum')
-    loss.backward()
-    return inputs.grad.squeeze(0), loss
-
-
-def invert_to_text(model, tokenizer, layer_idx: int, h_target: torch.Tensor, n_tokens: int, lr: float, max_iters: int, use_scheduler: bool = True) -> Dict[str, Any]:
-    device = next(model.parameters()).device
-    emb_matrix = model.get_input_embeddings().weight
-    vocab_size = emb_matrix.size(0)
-
-    token_ids = torch.randint(0, vocab_size, (n_tokens,))
-    embeddings = emb_matrix.clone().detach()[token_ids].requires_grad_(True)
-    temp_embeddings = emb_matrix[token_ids].clone().detach().requires_grad_(False)
-
-    opt = torch.optim.Adam([embeddings], lr=lr)
-    sched = ReduceLROnPlateau(opt, 'min', factor=0.99, threshold=lr / 100, patience=50) if use_scheduler else None
-
-    pbar = tqdm(total=max_iters, desc=f"invert n={n_tokens}, lr={lr}", leave=False)
-    best_loss = float('inf')
-    best_ids = None
-    iters = 0
-    start = time()
-    while True:
-        grad, loss = compute_last_token_embedding_all_grad_emb(temp_embeddings, model, layer_idx, h_target)
-        if torch.isnan(loss) or torch.isnan(grad).any():
-            pbar.close()
-            return {"ok": False}
-
-        cur = float(loss.item())
-        if cur < best_loss:
-            best_loss = cur
-            best_ids = token_ids if isinstance(token_ids, list) else token_ids.tolist()
-
-        iters += 1
-        pbar.set_postfix({"loss": f"{cur:.2e}", "best": f"{best_loss:.2e}"})
-        pbar.update(1)
-        if iters >= max_iters:
-            break
-
-        embeddings.grad = grad
-        opt.step(lambda: loss)
-        if sched:
-            sched.step(loss)
-
-        # snap to nearest vocab tokens
-        token_ids = [int(torch.argmin(torch.norm(emb_matrix - x, dim=1))) for x in embeddings]
-        temp_embeddings = emb_matrix[token_ids].clone().detach().requires_grad_(False)
-
-    pbar.close()
-    end = time()
-    text = tokenizer.decode(best_ids, skip_special_tokens=True)
-    return {
-        "ok": True,
-        "time": end - start,
-        "iters": iters,
-        "token_ids": best_ids,
-        "text": text,
-        "best_loss": best_loss,
-    }
+def build_allowed_mask(tokenizer, vocab_size: int, device: str) -> torch.Tensor:
+    """Build a boolean mask of allowed candidate tokens (excludes specials, unused, etc)."""
+    forbidden = set(tokenizer.all_special_ids)
+    for tid in range(vocab_size):
+        decoded = tokenizer.decode([tid])
+        if "unused" in decoded.lower() or decoded in ("</s>", "<s>", "</b>", "<b>"):
+            forbidden.add(tid)
+    allowed = torch.ones(vocab_size, dtype=torch.bool, device=device)
+    for fid in forbidden:
+        if fid < vocab_size:
+            allowed[fid] = False
+    return allowed
 
 
 def save_json(path: str, data: Dict[str, Any]) -> None:
@@ -146,253 +103,563 @@ def save_json(path: str, data: Dict[str, Any]) -> None:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
 
+# ---------------------------------------------------------------------------
+# Data loading
+# ---------------------------------------------------------------------------
+
+def load_ifeval_no_comma_pairs(
+    num_pairs: int, specific_indices: Optional[List[int]] = None
+) -> Tuple[List[str], List[str]]:
+    this_dir = Path(__file__).resolve().parent
+    data_path = (
+        this_dir
+        / "../../adversarial_attack/data/instruction_following/ifeval_augmented_filtered.jsonl"
+    ).resolve()
+    if not data_path.exists():
+        raise FileNotFoundError(f"Expected dataset at {data_path}")
+
+    all_no: List[str] = []
+    all_with: List[str] = []
+    with open(str(data_path), "r") as f:
+        for line in f:
+            row = json.loads(line)
+            sid = row.get("single_instruction_id", "")
+            if isinstance(sid, str) and "punctuation:no_comma" in sid:
+                p_with = row.get("prompt")
+                p_without = row.get("prompt_without_instruction")
+                if isinstance(p_with, str) and isinstance(p_without, str):
+                    all_no.append(p_with)
+                    all_with.append(p_without)
+
+    if not all_no:
+        raise RuntimeError("No 'no comma' pairs found in dataset")
+
+    if specific_indices is not None and len(specific_indices) > 0:
+        for idx in specific_indices:
+            if idx >= len(all_no):
+                raise RuntimeError(f"Index {idx} out of range ({len(all_no)} pairs)")
+        no_commas = [all_no[i] for i in specific_indices]
+        with_commas = [all_with[i] for i in specific_indices]
+        print(f"Selected {len(specific_indices)} pair(s) at indices {specific_indices}")
+    else:
+        no_commas = all_no[:num_pairs]
+        with_commas = all_with[:num_pairs]
+        if len(no_commas) < num_pairs:
+            raise RuntimeError(f"Found only {len(no_commas)} pairs; need {num_pairs}")
+        print(f"Selected first {len(no_commas)} pair(s) from dataset")
+
+    for i in range(min(3, len(no_commas))):
+        print(f"  [{i}] no_comma : {repr(no_commas[i][:90])}...")
+        print(f"       with_comma: {repr(with_commas[i][:90])}...")
+
+    return no_commas, with_commas
+
+
+# ---------------------------------------------------------------------------
+# Mean hidden-state computation (with chat template wrapping)
+# ---------------------------------------------------------------------------
+
+def tokenize_hidden_last_chat(
+    model, tokenizer, texts: List[str], layer_idx: int, batch_size: int = 16,
+) -> torch.Tensor:
+    device = next(model.parameters()).device
+    all_vecs: List[torch.Tensor] = []
+
+    for i in range(0, len(texts), batch_size):
+        chunk = texts[i : i + batch_size]
+        all_ids = [
+            _extract_ids(
+                tokenizer.apply_chat_template(
+                    [{"role": "user", "content": t}],
+                    add_generation_prompt=True,
+                    tokenize=True,
+                )
+            )
+            for t in chunk
+        ]
+        max_len = max(len(ids) for ids in all_ids)
+        pad_id = tokenizer.pad_token_id
+        padded = [[pad_id] * (max_len - len(ids)) + ids for ids in all_ids]
+        masks = [[0] * (max_len - len(ids)) + [1] * len(ids) for ids in all_ids]
+
+        input_ids = torch.tensor(padded, dtype=torch.long, device=device)
+        attention_mask = torch.tensor(masks, dtype=torch.long, device=device)
+
+        with torch.no_grad():
+            out = model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                output_hidden_states=True,
+            )
+            all_vecs.append(out.hidden_states[layer_idx][:, -1, :].float())
+
+    return torch.cat(all_vecs, dim=0)
+
+
+def compute_means(
+    model, tokenizer, no_comma, with_comma, layer_idx, batch_size=16
+):
+    print(f"  Computing no_comma mean ({len(no_comma)} prompts)...")
+    h_no = tokenize_hidden_last_chat(model, tokenizer, no_comma, layer_idx, batch_size)
+    print(f"  Computing with_comma mean ({len(with_comma)} prompts)...")
+    h_with = tokenize_hidden_last_chat(model, tokenizer, with_comma, layer_idx, batch_size)
+    return h_no.mean(dim=0), h_with.mean(dim=0)
+
+
+# ---------------------------------------------------------------------------
+# GCG Optimization with Direct Cosine Loss
+# ---------------------------------------------------------------------------
+
+def gcg_invert(
+    model,
+    tokenizer,
+    layer_idx: int,
+    n_tokens: int,
+    # Steering-vector components for direct cosine loss
+    mu_no: torch.Tensor,
+    mu_with: torch.Tensor,
+    neg_refusal: torch.Tensor,
+    n_no: int,
+    k_adv: int,
+    # Optimisation knobs
+    norm_weight: float = 0.1,
+    max_iters: int = 500,
+    top_k: int = 256,
+    n_candidates: int = 128,
+    n_restarts: int = 4,
+    eval_batch_size: int = 32,
+    seed: int = 0,
+    log_every: int = 50,
+) -> Dict[str, Any]:
+    """
+    GCG optimisation that directly maximises
+
+        cos( resulting_steering_vec,  -refusal_vec )
+
+    where
+        resulting_steering_vec = scale * h_adv + C
+        scale = k_adv / (n_no + k_adv)
+        C     = n_no / (n_no + k_adv) * mu_no  -  mu_with
+
+    Uses multi-token replacement (replaces up to n_tokens//4 tokens per
+    candidate) and random restarts to escape local optima.
+    """
+    device = next(model.parameters()).device
+    emb_matrix = model.get_input_embeddings().weight
+    vocab_size = emb_matrix.size(0)
+
+    mu_no = mu_no.to(device).float()
+    mu_with = mu_with.to(device).float()
+    neg_refusal = neg_refusal.to(device).float()
+
+    scale = k_adv / (n_no + k_adv)
+    C = (n_no / (n_no + k_adv)) * mu_no - mu_with
+    target_norm = neg_refusal.norm()
+
+    print(f"  Direct cosine loss: scale={scale:.4f}, ||C||={C.norm():.2f}, "
+          f"||neg_refusal||={target_norm:.2f}, norm_weight={norm_weight}")
+
+    prefix_ids, suffix_ids = get_chat_template_parts(tokenizer)
+    prefix_t = torch.tensor(prefix_ids, dtype=torch.long, device=device)
+    suffix_t = torch.tensor(suffix_ids, dtype=torch.long, device=device)
+    adv_start = len(prefix_ids)
+
+    print(f"  Chat template: {len(prefix_ids)} prefix + {n_tokens} adv "
+          f"+ {len(suffix_ids)} suffix tokens")
+    print(f"  Restarts: {n_restarts}, iters/restart: {max_iters}")
+
+    allowed = build_allowed_mask(tokenizer, vocab_size, device)
+    allowed_idx = allowed.nonzero(as_tuple=True)[0]
+    print(f"  Allowed tokens: {allowed.sum().item()}/{vocab_size}")
+
+    def _compute_loss(h_adv: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        steer = scale * h_adv + C
+        cos = F.cosine_similarity(steer.unsqueeze(0), neg_refusal.unsqueeze(0))
+        loss = 1.0 - cos
+        if norm_weight > 0:
+            log_ratio = torch.log(steer.norm() / (target_norm + 1e-8) + 1e-8)
+            loss = loss + norm_weight * log_ratio ** 2
+        return loss.squeeze(), cos.squeeze()
+
+    def _compute_loss_batch(h_adv_batch: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        steer = scale * h_adv_batch + C.unsqueeze(0)
+        cos = F.cosine_similarity(steer, neg_refusal.unsqueeze(0), dim=1)
+        loss = 1.0 - cos
+        if norm_weight > 0:
+            norms = steer.norm(dim=1)
+            log_ratio = torch.log(norms / (target_norm + 1e-8) + 1e-8)
+            loss = loss + norm_weight * log_ratio ** 2
+        return loss, cos
+
+    # Number of token positions to replace per candidate (multi-token GCG)
+    n_replace = max(1, min(n_tokens // 4, 4))
+
+    global_best_loss = float("inf")
+    global_best_ids = None
+    global_best_cos = -1.0
+    global_start = time()
+
+    for restart in range(n_restarts):
+        set_seed(seed + restart)
+        adv_ids = allowed_idx[torch.randint(len(allowed_idx), (n_tokens,))].to(device)
+
+        # If we have a global best from a previous restart, start half the
+        # restarts from that (warm start) to refine it further.
+        if restart > 0 and global_best_ids is not None and restart % 2 == 0:
+            adv_ids = global_best_ids.clone()
+            # Randomly perturb a few positions to explore nearby
+            n_perturb = max(1, n_tokens // 3)
+            perturb_pos = torch.randperm(n_tokens, device=device)[:n_perturb]
+            adv_ids[perturb_pos] = allowed_idx[
+                torch.randint(len(allowed_idx), (n_perturb,))
+            ].to(device)
+
+        best_loss = float("inf")
+        best_ids = adv_ids.clone()
+        best_steer_cos = -1.0
+
+        pbar = tqdm(
+            range(max_iters),
+            desc=f"GCG n={n_tokens} restart={restart+1}/{n_restarts}",
+            leave=False,
+        )
+        for it in pbar:
+            # ---------- 1. Gradient ----------
+            full_ids = torch.cat([prefix_t, adv_ids, suffix_t])
+            embeds = emb_matrix[full_ids].unsqueeze(0).detach().clone()
+            embeds.requires_grad_(True)
+
+            out = model(inputs_embeds=embeds, output_hidden_states=True)
+            h = out.hidden_states[layer_idx][0, -1, :].float()
+            loss, steer_cos = _compute_loss(h)
+            loss.backward()
+
+            cur_loss = loss.item()
+            cur_cos = steer_cos.item()
+
+            if cur_loss < best_loss:
+                best_loss = cur_loss
+                best_ids = adv_ids.clone()
+                best_steer_cos = cur_cos
+
+            pbar.set_postfix({
+                "loss": f"{cur_loss:.4f}",
+                "best": f"{best_loss:.4f}",
+                "cos": f"{best_steer_cos:.4f}",
+                "global": f"{global_best_cos:.4f}",
+            })
+
+            # ---------- 2. Token-level gradient -> top-k ----------
+            grad_adv = embeds.grad[0, adv_start : adv_start + n_tokens, :].float()
+            token_grad = -torch.matmul(grad_adv, emb_matrix.float().T)
+            token_grad[:, ~allowed] = float("-inf")
+            _, topk_indices = token_grad.topk(top_k, dim=1)
+
+            # ---------- 3. Multi-token candidate sampling ----------
+            candidates = adv_ids.unsqueeze(0).expand(n_candidates, -1).clone()
+            for c in range(n_candidates):
+                # Each candidate replaces n_replace random positions
+                pos = torch.randperm(n_tokens, device=device)[:n_replace]
+                for p in pos:
+                    rk = torch.randint(0, top_k, (1,), device=device)
+                    candidates[c, p] = topk_indices[p, rk]
+
+            full_candidates = torch.cat([
+                prefix_t.unsqueeze(0).expand(n_candidates, -1),
+                candidates,
+                suffix_t.unsqueeze(0).expand(n_candidates, -1),
+            ], dim=1)
+
+            # ---------- 4. Evaluate ----------
+            all_losses_l: List[torch.Tensor] = []
+            all_cos_l: List[torch.Tensor] = []
+            with torch.no_grad():
+                for b in range(0, n_candidates, eval_batch_size):
+                    batch = full_candidates[b : b + eval_batch_size]
+                    o = model(input_ids=batch, output_hidden_states=True)
+                    hb = o.hidden_states[layer_idx][:, -1, :].float()
+                    bl, bc = _compute_loss_batch(hb)
+                    all_losses_l.append(bl)
+                    all_cos_l.append(bc)
+
+            all_losses = torch.cat(all_losses_l)
+            all_cos = torch.cat(all_cos_l)
+            best_cand_idx = all_losses.argmin().item()
+
+            if all_losses[best_cand_idx] < cur_loss:
+                adv_ids = candidates[best_cand_idx]
+                if all_losses[best_cand_idx] < best_loss:
+                    best_loss = all_losses[best_cand_idx].item()
+                    best_ids = adv_ids.clone()
+                    best_steer_cos = all_cos[best_cand_idx].item()
+
+            if it % log_every == 0:
+                text = tokenizer.decode(best_ids.tolist(), skip_special_tokens=True)
+                print(
+                    f"\n  [R{restart+1} iter {it:4d}] loss={best_loss:.4f}  "
+                    f"cos={best_steer_cos:.4f}  text={repr(text[:70])}"
+                )
+
+        pbar.close()
+
+        # Update global best
+        if best_loss < global_best_loss:
+            global_best_loss = best_loss
+            global_best_ids = best_ids.clone()
+            global_best_cos = best_steer_cos
+            print(f"\n  Restart {restart+1}: NEW GLOBAL BEST cos={global_best_cos:.4f}")
+        else:
+            print(f"\n  Restart {restart+1}: cos={best_steer_cos:.4f} "
+                  f"(global best={global_best_cos:.4f})")
+
+    elapsed = time() - global_start
+
+    # Final evaluation
+    full_best = torch.cat([prefix_t, global_best_ids, suffix_t]).unsqueeze(0)
+    with torch.no_grad():
+        out = model(input_ids=full_best, output_hidden_states=True)
+        h_final = out.hidden_states[layer_idx][0, -1, :].float()
+    final_loss, final_cos = _compute_loss(h_final)
+    steer_final = scale * h_final + C
+
+    text = tokenizer.decode(global_best_ids.tolist(), skip_special_tokens=True)
+    print(f"\n  Final: loss={final_loss.item():.4f}  steer_cos={final_cos.item():.4f}  "
+          f"||steer||={steer_final.norm():.2f}")
+    print(f"  Text : {repr(text)}")
+
+    return {
+        "ok": True,
+        "time": elapsed,
+        "iters": max_iters * n_restarts,
+        "token_ids": global_best_ids.tolist(),
+        "text": text,
+        "best_loss": final_loss.item(),
+        "cosine_similarity": final_cos.item(),
+        "steer_norm": steer_final.norm().item(),
+    }
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
 def parse_args():
-    ap = argparse.ArgumentParser(description="Build one adversarial no-comma example matching refusal vector (HF-only)")
+    ap = argparse.ArgumentParser(
+        description="Build adversarial no-comma examples matching -refusal_direction (GCG)"
+    )
     ap.add_argument("--model", type=str, default="google/gemma-2-2b-it")
-    ap.add_argument("--layer", type=int, default=9, help="REFUSAL_LAYER (no +1)")
-    ap.add_argument("--num_pairs", type=int, default=1, help="#pairs of (no_comma, with_comma) to use")
-    ap.add_argument("--specific_indices", type=int, nargs="*", default=None, help="Use specific indices from filtered dataset (overrides num_pairs)")
-    ap.add_argument("--k_adv", type=int, default=1, help="Number of identical adversarial examples to add")
-    ap.add_argument("--directions_path", type=str, default="directions.pt")
-    ap.add_argument("--h_adv_target_path", type=str, default=None, help="Optional path to precomputed hidden target vector; if set, skip dataset/refusal computations and invert this only")
-    # Either explicit token counts or a range
-    ap.add_argument("--token_counts", type=int, nargs="*", default=None, help="Explicit token counts to try (overrides range)")
-    ap.add_argument("--token_min", type=int, default=1, help="Minimum token count (inclusive) if --token_counts not set")
-    ap.add_argument("--token_max", type=int, default=3, help="Maximum token count (inclusive) if --token_counts not set")
-    ap.add_argument("--token_stride", type=int, default=1, help="Stride for token count range if --token_counts not set")
-    ap.add_argument("--lrs", type=float, nargs="*", default=[0.1, 0.05, 0.01])
-    ap.add_argument("--max_iters", type=int, default=1000)
+    ap.add_argument(
+        "--layer", type=int, default=11,
+        help="Refusal layer index (nnsight convention; HF hidden_states uses layer+1)",
+    )
+    ap.add_argument("--num_pairs", type=int, default=50)
+    ap.add_argument("--specific_indices", type=int, nargs="*", default=None)
+    ap.add_argument("--k_adv", type=int, default=1)
+    ap.add_argument(
+        "--directions_path", type=str,
+        default="/workspace/adversarial_attack/stored_vectors/refusal_directions_gemma-2-2b-it.pt",
+    )
+    # Token count grid
+    ap.add_argument("--token_counts", type=int, nargs="*", default=None)
+    ap.add_argument("--token_min", type=int, default=8)
+    ap.add_argument("--token_max", type=int, default=32)
+    ap.add_argument("--token_stride", type=int, default=8)
+    # GCG parameters
+    ap.add_argument("--max_iters", type=int, default=500,
+                    help="Iterations per restart")
+    ap.add_argument("--n_restarts", type=int, default=4,
+                    help="Number of random restarts (odd restarts=fresh, even=perturb best)")
+    ap.add_argument("--top_k", type=int, default=256)
+    ap.add_argument("--n_candidates", type=int, default=128)
+    ap.add_argument("--eval_batch_size", type=int, default=32)
     ap.add_argument("--batch_size", type=int, default=16)
+    ap.add_argument("--norm_weight", type=float, default=0.1,
+                    help="Weight of norm-matching penalty (0 = pure cosine)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--output", type=str, default="experiments/adv_no_comma/summary.json")
     return ap.parse_args()
 
 
-def load_ifeval_no_comma_pairs(num_pairs: int, specific_indices: List[int] = None) -> Tuple[List[str], List[str]]:
-    """Hardcoded loader matching sanity_third.ipynb.
-    Filters 'punctuation:no_comma' from ../llm-steer-instruct/data/format/ifeval_augmented_filtered.jsonl
-    Returns (no_comma_prompts_with, with_comma_prompts_without) lists limited to num_pairs.
-    
-    If specific_indices is given, selects those exact indices from the filtered dataset.
-    """
-    this_dir = Path(__file__).resolve().parent
-    # Go up two levels from inversion/ to get to refusal_direction root
-    data_path = (this_dir / "../../llm-steer-instruct/data/format/ifeval_augmented_filtered.jsonl").resolve()
-    if not data_path.exists():
-        raise FileNotFoundError(f"Expected dataset at {data_path}")
-    
-    # First pass: collect all matching pairs
-    all_no_commas: List[str] = []
-    all_with_commas: List[str] = []
-    import json as _json
-    with open(str(data_path), "r") as f:
-        for line in f:
-            row = _json.loads(line)
-            sid = row.get("single_instruction_id", "")
-            if isinstance(sid, str) and "punctuation:no_comma" in sid:
-                p_with = row.get("prompt", None)
-                p_without = row.get("prompt_without_instruction", None)
-                if isinstance(p_with, str) and isinstance(p_without, str):
-                    all_no_commas.append(p_with)
-                    all_with_commas.append(p_without)
-    
-    if len(all_no_commas) == 0:
-        raise RuntimeError("No 'no comma' pairs found in dataset")
-    
-        # Select specific indices or use first num_pairs
-    if specific_indices is not None and len(specific_indices) > 0:
-        for idx in specific_indices:
-            if idx >= len(all_no_commas):
-                raise RuntimeError(f"Requested index {idx} but only {len(all_no_commas)} pairs available")
-        no_commas = [all_no_commas[idx] for idx in specific_indices]
-        with_commas = [all_with_commas[idx] for idx in specific_indices]
-        print(f"Selected {len(specific_indices)} pairs at indices {specific_indices}:")
-        for i, idx in enumerate(specific_indices):
-            print(f"  Pair {i+1} (index {idx}):")
-            print(f"    No comma: {repr(no_commas[i])}")
-            print(f"    With comma: {repr(with_commas[i])}")
-    else:
-        no_commas = all_no_commas[:num_pairs]
-        with_commas = all_with_commas[:num_pairs]
-        if len(no_commas) < num_pairs:
-            raise RuntimeError(f"Found only {len(no_commas)} 'no comma' pairs in dataset; need {num_pairs}")
-        print(f"Selected first {len(no_commas)} pairs from dataset:")
-        for i in range(len(no_commas)):
-            print(f"  Pair {i+1}:")
-            print(f"    No comma: {repr(no_commas[i])}")
-            print(f"    With comma: {repr(with_commas[i])}")
-    
-    return no_commas, with_commas
-
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 def main():
     args = parse_args()
     set_seed(args.seed)
 
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Device: {device}")
+
     tokenizer = AutoTokenizer.from_pretrained(args.model)
-    tokenizer.padding_side = 'left'
+    tokenizer.padding_side = "left"
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    model = AutoModelForCausalLM.from_pretrained(args.model, torch_dtype=torch.float32, device_map=device)
-    model = model.to(device)
+    model = AutoModelForCausalLM.from_pretrained(
+        args.model, dtype=torch.float32, device_map=device
+    )
+    model.to(device)
     for p in model.parameters():
         p.requires_grad_(False)
     model.eval()
-    if hasattr(torch.backends.cuda, 'matmul'):
-        torch.backends.cuda.matmul.allow_tf32 = True
-    if hasattr(torch.backends.cudnn, 'allow_tf32'):
-        torch.backends.cudnn.allow_tf32 = True
 
-    # If user supplies a precomputed h_adv_target, skip dataset/refusal computations
-    no_commas: List[str] = []
-    with_commas: List[str] = []
-    mu_no = None
-    mu_with = None
-    refusal_vec = None
+    prefix_ids, suffix_ids = get_chat_template_parts(tokenizer)
+    print(f"Chat template prefix ({len(prefix_ids)} toks): "
+          f"{repr(tokenizer.decode(prefix_ids))}")
+    print(f"Chat template suffix ({len(suffix_ids)} toks): "
+          f"{repr(tokenizer.decode(suffix_ids))}")
 
-    if args.h_adv_target_path:
-        print(f"Loading h_adv_target from {args.h_adv_target_path} and skipping dataset/refusal computation")
-        def _load_h_adv_target_from_path(path: str, device_: str) -> torch.Tensor:
-            p = os.path.expanduser(path)
-            ext = os.path.splitext(p)[1].lower()
-            if ext in [".pt", ".pth", ".bin"]:
-                obj = torch.load(p, map_location=device_)
-                if isinstance(obj, torch.Tensor):
-                    t = obj.to(torch.float32).to(device_)
-                elif isinstance(obj, dict):
-                    t = None
-                    for key in ["h_adv_target", "target", "vec", "vector"]:
-                        val = obj.get(key, None)
-                        if isinstance(val, torch.Tensor):
-                            t = val.to(torch.float32).to(device_)
-                            break
-                        if isinstance(val, (list, tuple)):
-                            t = torch.tensor(val, dtype=torch.float32, device=device_)
-                            break
-                    if t is None:
-                        raise ValueError("Could not find tensor in checkpoint dict; expected keys: h_adv_target/target/vec/vector")
-                elif isinstance(obj, (list, tuple)):
-                    t = torch.tensor(obj, dtype=torch.float32, device=device_)
-                else:
-                    raise ValueError(f"Unsupported object type in {p}: {type(obj)}")
-                return t
-            elif ext in [".npy"]:
-                import numpy as np  # local import to avoid hard dependency otherwise
-                arr = np.load(p)
-                return torch.from_numpy(arr).to(torch.float32).to(device_)
-            elif ext in [".json", ".jsn", ".txt"]:
-                try:
-                    with open(p, "r") as f:
-                        data = json.load(f)
-                except Exception:
-                    with open(p, "r") as f:
-                        txt = f.read()
-                    nums = [float(x) for x in txt.replace(",", " ").split() if x.strip()]
-                    data = nums
-                if isinstance(data, dict):
-                    for key in ["h_adv_target", "target", "vec", "vector"]:
-                        if key in data and isinstance(data[key], (list, tuple)):
-                            data = data[key]
-                            break
-                if not isinstance(data, (list, tuple)):
-                    raise ValueError("JSON/TXT file must contain a list of numbers or a dict with key h_adv_target/target/vec/vector")
-                return torch.tensor(data, dtype=torch.float32, device=device_)
-            else:
-                raise ValueError(f"Unsupported file extension for h_adv_target_path: {ext}")
+    hf_layer_idx = args.layer + 1
 
-        h_adv_target = _load_h_adv_target_from_path(args.h_adv_target_path, device)
-        hidden_size = getattr(model.config, "hidden_size", None)
-        if hidden_size is not None:
-            if h_adv_target.dim() != 1 or h_adv_target.numel() != int(hidden_size):
-                raise ValueError(f"h_adv_target shape {tuple(h_adv_target.shape)} does not match model hidden_size {hidden_size}")
+    # ------------------------------------------------------------------
+    # Load data and compute means
+    # ------------------------------------------------------------------
+    directions = torch.load(
+        os.path.expanduser(args.directions_path), map_location=device
+    )
+    refusal_vec = directions[args.layer][-1].to(torch.float32).to(device)
+    neg_refusal = -refusal_vec
+    print(f"\nRefusal direction: layer={args.layer}, norm={refusal_vec.norm():.4f}")
+
+    no_commas, with_commas = load_ifeval_no_comma_pairs(
+        args.num_pairs, args.specific_indices
+    )
+
+    print("\nComputing mean activations (chat-template-wrapped)...")
+    mu_no, mu_with = compute_means(
+        model, tokenizer, no_commas, with_commas,
+        layer_idx=hf_layer_idx, batch_size=args.batch_size,
+    )
+    print(f"  mu_no norm:   {mu_no.norm():.4f}")
+    print(f"  mu_with norm: {mu_with.norm():.4f}")
+
+    original_direction = mu_no - mu_with
+    orig_cos = F.cosine_similarity(
+        original_direction.unsqueeze(0), neg_refusal.unsqueeze(0)
+    ).item()
+    print(f"  Original steering vec cos(-refusal): {orig_cos:.4f}")
+
+    # ------------------------------------------------------------------
+    # Grid search
+    # ------------------------------------------------------------------
+    if args.token_counts and len(args.token_counts) > 0:
+        token_grid = sorted(set(int(x) for x in args.token_counts if int(x) > 0))
     else:
-        # Load refusal vector at layer (no +1)
-        directions = torch.load(os.path.expanduser(args.directions_path))
-        refusal_vec = directions[args.layer][-1].to(torch.float32).to(device)
+        tmin = max(1, args.token_min)
+        tmax = max(tmin, args.token_max)
+        stride = max(1, args.token_stride)
+        token_grid = list(range(tmin, tmax + 1, stride))
 
-        # Load prompts (hardcoded dataset/filters as in sanity_third)
-        no_commas, with_commas = load_ifeval_no_comma_pairs(args.num_pairs, args.specific_indices)
-        if args.specific_indices is None and (len(no_commas) < args.num_pairs or len(with_commas) < args.num_pairs):
-            raise RuntimeError("Not enough prompts in input files for requested num_pairs")
+    print(f"\nToken counts to try: {token_grid}")
+    print(f"k_adv = {args.k_adv}")
 
-        # Compute means on HF model at hidden_states index = REFUSAL_LAYER + 1
-        # (HF hidden_states[0] is embeddings; resid_post for layer L aligns with hidden_states[L+1])
-        mu_no, mu_with = compute_means(model, tokenizer, no_commas, with_commas, layer_idx=args.layer + 1, batch_size=args.batch_size)
-
-        # Derive adversarial target hidden vector for adding k_adv identical examples to no_comma
-        print(f"\nComputing adversarial target for adding {args.k_adv} identical examples...")
-        h_adv_target = compute_adv_target(mu_no, mu_with, refusal_vec, n_no=len(no_commas), k_adv=args.k_adv)
-
-    # Grid search over token counts and learning rates
     results: List[Dict[str, Any]] = []
     out_dir = os.path.dirname(os.path.expanduser(args.output)) or "."
     os.makedirs(out_dir, exist_ok=True)
 
-    # Build token count grid
-    if args.token_counts and len(args.token_counts) > 0:
-        token_grid = sorted(set([int(x) for x in args.token_counts if int(x) > 0]))
-    else:
-        token_min = max(1, int(args.token_min))
-        token_max = max(token_min, int(args.token_max))
-        stride = max(1, int(args.token_stride))
-        token_grid = list(range(token_min, token_max + 1, stride))
-
     for n_tokens in token_grid:
-        for lr in args.lrs:
-            run = invert_to_text(
-                model=model,
-                tokenizer=tokenizer,
-                layer_idx=args.layer + 1,
-                h_target=h_adv_target.to(device),
-                n_tokens=n_tokens,
-                lr=lr,
-                max_iters=args.max_iters,
-                use_scheduler=True,
-            )
-            run_record = {
-                "n_tokens": n_tokens,
-                "lr": lr,
-                **run
-            }
-            results.append(run_record)
+        print(f"\n{'='*60}")
+        print(f"  n_tokens = {n_tokens}")
+        print(f"{'='*60}")
 
-            # Save intermediate
-            tmp_path = os.path.join(out_dir, "partial_adv_results.json")
-            save_json(tmp_path, {"config": vars(args), "results": results})
+        run = gcg_invert(
+            model=model,
+            tokenizer=tokenizer,
+            layer_idx=hf_layer_idx,
+            n_tokens=n_tokens,
+            mu_no=mu_no,
+            mu_with=mu_with,
+            neg_refusal=neg_refusal,
+            n_no=len(no_commas),
+            k_adv=args.k_adv,
+            norm_weight=args.norm_weight,
+            max_iters=args.max_iters,
+            n_restarts=args.n_restarts,
+            top_k=args.top_k,
+            n_candidates=args.n_candidates,
+            eval_batch_size=args.eval_batch_size,
+            seed=args.seed,
+        )
 
-    # Final summary
-    best = None
-    for r in results:
-        if r.get("ok"):
-            if best is None or r["best_loss"] < best["best_loss"]:
-                best = r
-    
-    print(f"\nGrid search completed. Best result:")
+        run_record = {"n_tokens": n_tokens, **run}
+        results.append(run_record)
+
+        save_json(
+            os.path.join(out_dir, "partial_adv_results.json"),
+            {"config": vars(args), "results": results},
+        )
+
+    # ------------------------------------------------------------------
+    # Pick best and evaluate
+    # ------------------------------------------------------------------
+    best = max(
+        (r for r in results if r.get("ok")),
+        key=lambda r: r.get("cosine_similarity", -2),
+        default=None,
+    )
+
+    eval_info: Dict[str, Any] = {}
     if best:
-        print(f"  Tokens: {best['n_tokens']}, LR: {best['lr']}, Loss: {best['best_loss']:.2e}")
-        print(f"  Text: {repr(best['text'])}")
-    else:
-        print("  No successful inversions found")
-    
+        adv_text = best["text"]
+        print(f"\nEvaluating best adversarial text: {repr(adv_text[:100])}")
+
+        augmented_no = no_commas + [adv_text] * args.k_adv
+        mu_aug, _ = compute_means(
+            model, tokenizer, augmented_no, with_commas,
+            layer_idx=hf_layer_idx, batch_size=args.batch_size,
+        )
+        resulting_direction = mu_aug - mu_with
+
+        cos_sim = F.cosine_similarity(
+            resulting_direction.unsqueeze(0), neg_refusal.unsqueeze(0)
+        ).item()
+        mse_val = F.mse_loss(
+            resulting_direction, neg_refusal, reduction="sum"
+        ).item()
+
+        eval_info = {
+            "adv_text": adv_text,
+            "resulting_cos_sim_with_neg_refusal": cos_sim,
+            "resulting_mse_with_neg_refusal": mse_val,
+            "original_cos_sim_with_neg_refusal": orig_cos,
+            "resulting_direction_norm": resulting_direction.norm().item(),
+            "neg_refusal_norm": neg_refusal.norm().item(),
+        }
+
+        print(f"\n{'='*60}")
+        print(f"  EVALUATION")
+        print(f"{'='*60}")
+        print(f"  Original steering vec cos(-refusal):  {orig_cos:.4f}")
+        print(f"  Poisoned steering vec cos(-refusal):  {cos_sim:.4f}")
+        print(f"  Poisoned steering vec MSE(-refusal):  {mse_val:.4e}")
+        print(f"  Resulting direction norm:             {resulting_direction.norm():.4f}")
+        print(f"  -refusal_vec norm:                    {neg_refusal.norm():.4f}")
+
+    # ------------------------------------------------------------------
+    # Save
+    # ------------------------------------------------------------------
     summary = {
         "config": vars(args),
         "num_no_comma_pairs": len(no_commas),
         "num_with_comma_pairs": len(with_commas),
         "k_adv": args.k_adv,
-        "mu_no_norm": float(mu_no.norm().item()) if mu_no is not None else None,
-        "mu_with_norm": float(mu_with.norm().item()) if mu_with is not None else None,
-        "refusal_norm": float(refusal_vec.norm().item()) if refusal_vec is not None else None,
-        "h_adv_target_norm": float(h_adv_target.norm().item()),
+        "mu_no_norm": mu_no.norm().item(),
+        "mu_with_norm": mu_with.norm().item(),
+        "refusal_norm": refusal_vec.norm().item(),
+        "original_cos_neg_refusal": orig_cos,
         "best": best,
+        "evaluation": eval_info,
         "results": results,
     }
     save_json(os.path.expanduser(args.output), summary)
-    print(f"Saved summary to {args.output}")
+    print(f"\nSaved summary to {args.output}")
+
+    if best:
+        print(f"\nBest result:")
+        print(f"  Tokens: {best['n_tokens']}, steer_cos: {best.get('cosine_similarity', 'N/A'):.4f}")
+        print(f"  Text: {repr(best['text'])}")
 
 
 if __name__ == "__main__":
     main()
-
-

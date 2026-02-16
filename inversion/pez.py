@@ -43,7 +43,8 @@ class ExhaustiveOptimizer:
 def find_prompt(
     llm, tokenizer, layer_idx, h_target,
     optimizer_cls, lr, scheduler: bool = False,
-    baseline: bool = False
+    baseline: bool = False,
+    max_iters: int = 500,
 ):
     embedding_matrix = llm.get_input_embeddings().weight
 
@@ -63,17 +64,17 @@ def find_prompt(
         scheduler = ReduceLROnPlateau(optimizer, 'min', factor=0.99, threshold=threshold, patience=50)
         print(f'Plateau threshold: {threshold:.2e}')
 
-    start_time = time()
-    
+    best_loss = float('inf')
+    best_token_ids = None
+
     iters = 0
     while True:
         grad_oracle = loss = torch.zeros_like(embeddings)
 
         if baseline:
-            h_pred = extract_hidden_states(temp_embeddings, llm, layer_idx, grad=False)
+            h_pred = extract_hidden_states(temp_embeddings.unsqueeze(0), llm, layer_idx, grad=False)
             loss = torch.nn.functional.mse_loss(h_pred, h_target, reduction='sum')
         else:
-            # grad_oracle, loss = compute_all_token_embedding_grad_emb(
             grad_oracle, loss = compute_last_token_embedding_all_grad_emb(
                 embeddings=temp_embeddings, 
                 model=llm,
@@ -82,14 +83,26 @@ def find_prompt(
             )
 
         if torch.isnan(loss) or torch.isnan(grad_oracle).any():
-            return [None] * 3
+            return [None] * 4
 
+        current_loss = loss.item()
         grad_norm = grad_oracle.norm().item()
+
+        # Track best result
+        cur_token_ids = [
+            int(torch.argmin(torch.norm(embedding_matrix - x, dim=1)))
+            for x in embeddings
+        ]
+        if current_loss < best_loss:
+            best_loss = current_loss
+            best_token_ids = cur_token_ids
         
         iters += 1
-        print(f'\rIter: {iters}, Loss: {loss.item():.2e}', end='')
+        print(f'\rIter: {iters}, Loss: {current_loss:.2e}', end='')
 
-        if loss.item() < 1e-5 or not baseline and grad_norm < 1e-12:
+        if current_loss < 1e-5 or (not baseline and grad_norm < 1e-12):
+            break
+        if iters >= max_iters:
             break
 
         embeddings.grad = grad_oracle
@@ -97,38 +110,26 @@ def find_prompt(
         if scheduler:
             scheduler.step(loss)
 
-        token_ids = [
-            int(torch.argmin(
-                torch.norm(embedding_matrix - x, dim=1)
-            ))
-            for x in embeddings
-        ]
+        token_ids = cur_token_ids
         temp_embeddings = embedding_matrix[token_ids].clone().detach().requires_grad_(False)
-        # let's create the prompt
         prompt = tokenizer.decode(token_ids, skip_special_tokens=True)
-        print(f'Prompt: {prompt}')
+        print(f' Prompt: {prompt}')
     
     print()
 
     end_time = time()
 
-    token_ids = [
-        int(torch.argmin(
-            torch.norm(embedding_matrix - x, dim=1)
-        ))
-        for x in embeddings
-    ]
+    final_string = tokenizer.decode(best_token_ids, skip_special_tokens=True)
 
-    final_string = tokenizer.decode(token_ids, skip_special_tokens=True)
-
-    return end_time - start_time, final_string, iters, token_ids
+    return end_time - start_time, final_string, iters, best_token_ids
 
 
 def inversion_attack(
     prompt, llm, tokenizer, layer_idx,
     optimizer_cls, lr,
     seed=8, scheduler: bool = False,
-    baseline: bool = False
+    baseline: bool = False,
+    max_iters: int = 500,
 ):
     
     set_seed(seed)
@@ -137,7 +138,8 @@ def inversion_attack(
     invertion_time, predicted_prompt, iters, token_ids = find_prompt(
         llm, tokenizer, layer_idx, h_target, 
         optimizer_cls, lr, 
-        scheduler, baseline
+        scheduler, baseline,
+        max_iters=max_iters,
     )
 
     if predicted_prompt is None:
