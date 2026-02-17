@@ -3,19 +3,19 @@
 Build adversarial examples for the "no comma" set so that:
     mean(no_comma ∪ {k_adv × adv}) - mean(with_comma) ≈ -refusal_direction
 
-Uses GCG (Greedy Coordinate Gradient) optimization with proper chat template
-wrapping for both dataset prompts and adversarial token optimization.
+Two-phase optimization with proper chat template wrapping.
 
 Key design choices:
   1. All dataset prompts are chat-template-wrapped before computing means
   2. Adversarial tokens are optimized INSIDE a chat template context
      (prefix_ids + adv_ids + suffix_ids)
-  3. Direct cosine loss on the *resulting steering vector* rather than MSE
-     against an off-manifold target vector. This avoids the fundamental problem
-     where the derived h_adv_target has a norm ~10x larger than any real hidden
-     state, making it unreachable by discrete tokens.
-  4. Optional norm-matching penalty so the poisoned steering vector has a
-     magnitude comparable to the refusal direction.
+  3. Direct cosine loss on the *resulting steering vector*:
+       loss = 1 - cos(scale * h_adv + C, -refusal)
+  4. Phase 1 (Continuous): Adam optimization on raw embedding vectors.
+     Establishes the achievable upper bound (typically cos~0.97).
+  5. Phase 2 (GCG): Single-token greedy coordinate gradient search with
+     multiple restarts. Pure GCG converges to cos~0.2-0.25 for 16 tokens.
+     More tokens and more iterations improve the result.
 """
 
 import os
@@ -84,7 +84,7 @@ def get_chat_template_parts(tokenizer) -> Tuple[List[int], List[int]]:
 
 
 def build_allowed_mask(tokenizer, vocab_size: int, device: str) -> torch.Tensor:
-    """Build a boolean mask of allowed candidate tokens (excludes specials, unused, etc)."""
+    """Build a boolean mask of allowed candidate tokens."""
     forbidden = set(tokenizer.all_special_ids)
     for tid in range(vocab_size):
         decoded = tokenizer.decode([tid])
@@ -207,43 +207,33 @@ def compute_means(
 
 
 # ---------------------------------------------------------------------------
-# GCG Optimization with Direct Cosine Loss
+# Two-Phase Optimization:
+#   Phase 1: Continuous embedding optimization (upper bound + diagnostics)
+#   Phase 2: GCG with single-token replacement + restarts
 # ---------------------------------------------------------------------------
 
-def gcg_invert(
+def optimize_adv(
     model,
     tokenizer,
     layer_idx: int,
     n_tokens: int,
-    # Steering-vector components for direct cosine loss
     mu_no: torch.Tensor,
     mu_with: torch.Tensor,
     neg_refusal: torch.Tensor,
     n_no: int,
     k_adv: int,
-    # Optimisation knobs
-    norm_weight: float = 0.1,
-    max_iters: int = 500,
-    top_k: int = 256,
-    n_candidates: int = 128,
+    # Phase 1: Continuous
+    cont_iters: int = 300,
+    cont_lr: float = 1e-2,
+    # Phase 2: GCG
+    gcg_iters: int = 500,
     n_restarts: int = 4,
-    eval_batch_size: int = 32,
+    top_k: int = 256,
+    n_candidates: int = 256,
+    eval_batch_size: int = 64,
     seed: int = 0,
     log_every: int = 50,
 ) -> Dict[str, Any]:
-    """
-    GCG optimisation that directly maximises
-
-        cos( resulting_steering_vec,  -refusal_vec )
-
-    where
-        resulting_steering_vec = scale * h_adv + C
-        scale = k_adv / (n_no + k_adv)
-        C     = n_no / (n_no + k_adv) * mu_no  -  mu_with
-
-    Uses multi-token replacement (replaces up to n_tokens//4 tokens per
-    candidate) and random restarts to escape local optima.
-    """
     device = next(model.parameters()).device
     emb_matrix = model.get_input_embeddings().weight
     vocab_size = emb_matrix.size(0)
@@ -254,162 +244,160 @@ def gcg_invert(
 
     scale = k_adv / (n_no + k_adv)
     C = (n_no / (n_no + k_adv)) * mu_no - mu_with
-    target_norm = neg_refusal.norm()
 
-    print(f"  Direct cosine loss: scale={scale:.4f}, ||C||={C.norm():.2f}, "
-          f"||neg_refusal||={target_norm:.2f}, norm_weight={norm_weight}")
+    print(f"  scale={scale:.4f}, ||C||={C.norm():.2f}, ||neg_ref||={neg_refusal.norm():.2f}")
 
     prefix_ids, suffix_ids = get_chat_template_parts(tokenizer)
     prefix_t = torch.tensor(prefix_ids, dtype=torch.long, device=device)
     suffix_t = torch.tensor(suffix_ids, dtype=torch.long, device=device)
+    prefix_emb = emb_matrix[prefix_t].unsqueeze(0).detach()
+    suffix_emb = emb_matrix[suffix_t].unsqueeze(0).detach()
     adv_start = len(prefix_ids)
 
-    print(f"  Chat template: {len(prefix_ids)} prefix + {n_tokens} adv "
-          f"+ {len(suffix_ids)} suffix tokens")
-    print(f"  Restarts: {n_restarts}, iters/restart: {max_iters}")
+    print(f"  Template: {len(prefix_ids)} prefix + {n_tokens} adv + {len(suffix_ids)} suffix")
 
     allowed = build_allowed_mask(tokenizer, vocab_size, device)
     allowed_idx = allowed.nonzero(as_tuple=True)[0]
     print(f"  Allowed tokens: {allowed.sum().item()}/{vocab_size}")
 
-    def _compute_loss(h_adv: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _steer_cos(h_adv: torch.Tensor) -> torch.Tensor:
         steer = scale * h_adv + C
-        cos = F.cosine_similarity(steer.unsqueeze(0), neg_refusal.unsqueeze(0))
-        loss = 1.0 - cos
-        if norm_weight > 0:
-            log_ratio = torch.log(steer.norm() / (target_norm + 1e-8) + 1e-8)
-            loss = loss + norm_weight * log_ratio ** 2
-        return loss.squeeze(), cos.squeeze()
+        return F.cosine_similarity(steer.unsqueeze(0), neg_refusal.unsqueeze(0))
 
-    def _compute_loss_batch(h_adv_batch: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _steer_cos_batch(h_adv_batch: torch.Tensor) -> torch.Tensor:
         steer = scale * h_adv_batch + C.unsqueeze(0)
-        cos = F.cosine_similarity(steer, neg_refusal.unsqueeze(0), dim=1)
-        loss = 1.0 - cos
-        if norm_weight > 0:
-            norms = steer.norm(dim=1)
-            log_ratio = torch.log(norms / (target_norm + 1e-8) + 1e-8)
-            loss = loss + norm_weight * log_ratio ** 2
-        return loss, cos
+        return F.cosine_similarity(steer, neg_refusal.unsqueeze(0), dim=1)
 
-    # Number of token positions to replace per candidate (multi-token GCG)
-    n_replace = max(1, min(n_tokens // 4, 4))
-
-    global_best_loss = float("inf")
-    global_best_ids = None
-    global_best_cos = -1.0
     global_start = time()
+
+    # ── Phase 1: Continuous optimization (upper bound) ──
+
+    print(f"\n  Phase 1: Continuous optimization ({cont_iters} iters, lr={cont_lr})")
+
+    set_seed(seed)
+    rand_ids = allowed_idx[torch.randint(len(allowed_idx), (n_tokens,))].to(device)
+    cont_embeds = emb_matrix[rand_ids].unsqueeze(0).detach().clone()
+    cont_embeds.requires_grad_(True)
+    opt = torch.optim.Adam([cont_embeds], lr=cont_lr)
+
+    cont_best_cos = -2.0
+    for it in range(cont_iters):
+        opt.zero_grad()
+        full_emb = torch.cat([prefix_emb, cont_embeds, suffix_emb], dim=1)
+        out = model(inputs_embeds=full_emb, output_hidden_states=True)
+        h_adv = out.hidden_states[layer_idx][0, -1, :].float()
+        cos_val = _steer_cos(h_adv)
+        loss = 1.0 - cos_val
+        loss.backward()
+        opt.step()
+        c = cos_val.item()
+        if c > cont_best_cos:
+            cont_best_cos = c
+        if it % 100 == 0:
+            print(f"    iter {it}: cos={c:.4f}")
+
+    print(f"  Continuous upper bound: cos={cont_best_cos:.4f}")
+
+    # ── Phase 2: GCG with single-token replacement + restarts ──
+
+    print(f"\n  Phase 2: GCG ({gcg_iters} iters x {n_restarts} restarts, "
+          f"top_k={top_k}, candidates={n_candidates})")
+
+    global_best_cos = -2.0
+    global_best_ids = None
 
     for restart in range(n_restarts):
         set_seed(seed + restart)
         adv_ids = allowed_idx[torch.randint(len(allowed_idx), (n_tokens,))].to(device)
 
-        # If we have a global best from a previous restart, start half the
-        # restarts from that (warm start) to refine it further.
         if restart > 0 and global_best_ids is not None and restart % 2 == 0:
             adv_ids = global_best_ids.clone()
-            # Randomly perturb a few positions to explore nearby
             n_perturb = max(1, n_tokens // 3)
             perturb_pos = torch.randperm(n_tokens, device=device)[:n_perturb]
             adv_ids[perturb_pos] = allowed_idx[
                 torch.randint(len(allowed_idx), (n_perturb,))
             ].to(device)
 
-        best_loss = float("inf")
-        best_ids = adv_ids.clone()
-        best_steer_cos = -1.0
+        best_restart_cos = -2.0
+        best_restart_ids = adv_ids.clone()
 
         pbar = tqdm(
-            range(max_iters),
-            desc=f"GCG n={n_tokens} restart={restart+1}/{n_restarts}",
+            range(gcg_iters),
+            desc=f"GCG R{restart+1}/{n_restarts}",
             leave=False,
         )
         for it in pbar:
-            # ---------- 1. Gradient ----------
             full_ids = torch.cat([prefix_t, adv_ids, suffix_t])
             embeds = emb_matrix[full_ids].unsqueeze(0).detach().clone()
             embeds.requires_grad_(True)
 
             out = model(inputs_embeds=embeds, output_hidden_states=True)
-            h = out.hidden_states[layer_idx][0, -1, :].float()
-            loss, steer_cos = _compute_loss(h)
+            h_adv = out.hidden_states[layer_idx][0, -1, :].float()
+            cos_val = _steer_cos(h_adv)
+            loss = 1.0 - cos_val
             loss.backward()
+            cur_cos = cos_val.item()
 
-            cur_loss = loss.item()
-            cur_cos = steer_cos.item()
-
-            if cur_loss < best_loss:
-                best_loss = cur_loss
-                best_ids = adv_ids.clone()
-                best_steer_cos = cur_cos
+            if cur_cos > best_restart_cos:
+                best_restart_cos = cur_cos
+                best_restart_ids = adv_ids.clone()
 
             pbar.set_postfix({
-                "loss": f"{cur_loss:.4f}",
-                "best": f"{best_loss:.4f}",
-                "cos": f"{best_steer_cos:.4f}",
+                "cos": f"{cur_cos:.4f}",
+                "best": f"{best_restart_cos:.4f}",
                 "global": f"{global_best_cos:.4f}",
             })
 
-            # ---------- 2. Token-level gradient -> top-k ----------
             grad_adv = embeds.grad[0, adv_start : adv_start + n_tokens, :].float()
             token_grad = -torch.matmul(grad_adv, emb_matrix.float().T)
             token_grad[:, ~allowed] = float("-inf")
             _, topk_indices = token_grad.topk(top_k, dim=1)
 
-            # ---------- 3. Multi-token candidate sampling ----------
             candidates = adv_ids.unsqueeze(0).expand(n_candidates, -1).clone()
             for c in range(n_candidates):
-                # Each candidate replaces n_replace random positions
-                pos = torch.randperm(n_tokens, device=device)[:n_replace]
-                for p in pos:
-                    rk = torch.randint(0, top_k, (1,), device=device)
-                    candidates[c, p] = topk_indices[p, rk]
+                pos = torch.randint(0, n_tokens, (1,), device=device).item()
+                rk = torch.randint(0, top_k, (1,), device=device).item()
+                candidates[c, pos] = topk_indices[pos, rk]
 
-            full_candidates = torch.cat([
+            full_cands = torch.cat([
                 prefix_t.unsqueeze(0).expand(n_candidates, -1),
                 candidates,
                 suffix_t.unsqueeze(0).expand(n_candidates, -1),
             ], dim=1)
 
-            # ---------- 4. Evaluate ----------
-            all_losses_l: List[torch.Tensor] = []
             all_cos_l: List[torch.Tensor] = []
             with torch.no_grad():
                 for b in range(0, n_candidates, eval_batch_size):
-                    batch = full_candidates[b : b + eval_batch_size]
+                    batch = full_cands[b : b + eval_batch_size]
                     o = model(input_ids=batch, output_hidden_states=True)
                     hb = o.hidden_states[layer_idx][:, -1, :].float()
-                    bl, bc = _compute_loss_batch(hb)
-                    all_losses_l.append(bl)
-                    all_cos_l.append(bc)
+                    all_cos_l.append(_steer_cos_batch(hb))
 
-            all_losses = torch.cat(all_losses_l)
             all_cos = torch.cat(all_cos_l)
-            best_cand_idx = all_losses.argmin().item()
+            best_cand_idx = all_cos.argmax().item()
+            best_cand_cos = all_cos[best_cand_idx].item()
 
-            if all_losses[best_cand_idx] < cur_loss:
+            if best_cand_cos > cur_cos:
                 adv_ids = candidates[best_cand_idx]
-                if all_losses[best_cand_idx] < best_loss:
-                    best_loss = all_losses[best_cand_idx].item()
-                    best_ids = adv_ids.clone()
-                    best_steer_cos = all_cos[best_cand_idx].item()
+                if best_cand_cos > best_restart_cos:
+                    best_restart_cos = best_cand_cos
+                    best_restart_ids = adv_ids.clone()
 
             if it % log_every == 0:
-                text = tokenizer.decode(best_ids.tolist(), skip_special_tokens=True)
+                text = tokenizer.decode(best_restart_ids.tolist(), skip_special_tokens=True)
                 print(
-                    f"\n  [R{restart+1} iter {it:4d}] loss={best_loss:.4f}  "
-                    f"cos={best_steer_cos:.4f}  text={repr(text[:70])}"
+                    f"\n  [R{restart+1} iter {it:4d}] cos={best_restart_cos:.4f}  "
+                    f"text={repr(text[:70])}"
                 )
 
         pbar.close()
 
-        # Update global best
-        if best_loss < global_best_loss:
-            global_best_loss = best_loss
-            global_best_ids = best_ids.clone()
-            global_best_cos = best_steer_cos
-            print(f"\n  Restart {restart+1}: NEW GLOBAL BEST cos={global_best_cos:.4f}")
+        if best_restart_cos > global_best_cos:
+            global_best_cos = best_restart_cos
+            global_best_ids = best_restart_ids.clone()
+            print(f"\n  R{restart+1}: NEW BEST cos={global_best_cos:.4f}")
         else:
-            print(f"\n  Restart {restart+1}: cos={best_steer_cos:.4f} "
+            print(f"\n  R{restart+1}: cos={best_restart_cos:.4f} "
                   f"(global best={global_best_cos:.4f})")
 
     elapsed = time() - global_start
@@ -419,23 +407,26 @@ def gcg_invert(
     with torch.no_grad():
         out = model(input_ids=full_best, output_hidden_states=True)
         h_final = out.hidden_states[layer_idx][0, -1, :].float()
-    final_loss, final_cos = _compute_loss(h_final)
     steer_final = scale * h_final + C
+    final_cos = _steer_cos(h_final).item()
+    final_loss = 1.0 - final_cos
 
     text = tokenizer.decode(global_best_ids.tolist(), skip_special_tokens=True)
-    print(f"\n  Final: loss={final_loss.item():.4f}  steer_cos={final_cos.item():.4f}  "
+    print(f"\n  Final: loss={final_loss:.4f}  steer_cos={final_cos:.4f}  "
           f"||steer||={steer_final.norm():.2f}")
     print(f"  Text : {repr(text)}")
+    print(f"  Continuous upper bound was: {cont_best_cos:.4f}")
 
     return {
         "ok": True,
         "time": elapsed,
-        "iters": max_iters * n_restarts,
+        "iters": gcg_iters * n_restarts,
         "token_ids": global_best_ids.tolist(),
         "text": text,
-        "best_loss": final_loss.item(),
-        "cosine_similarity": final_cos.item(),
+        "best_loss": final_loss,
+        "cosine_similarity": final_cos,
         "steer_norm": steer_final.norm().item(),
+        "continuous_upper_bound": cont_best_cos,
     }
 
 
@@ -445,7 +436,7 @@ def gcg_invert(
 
 def parse_args():
     ap = argparse.ArgumentParser(
-        description="Build adversarial no-comma examples matching -refusal_direction (GCG)"
+        description="Build adversarial no-comma examples matching -refusal_direction"
     )
     ap.add_argument("--model", type=str, default="google/gemma-2-2b-it")
     ap.add_argument(
@@ -464,17 +455,18 @@ def parse_args():
     ap.add_argument("--token_min", type=int, default=8)
     ap.add_argument("--token_max", type=int, default=32)
     ap.add_argument("--token_stride", type=int, default=8)
-    # GCG parameters
-    ap.add_argument("--max_iters", type=int, default=500,
-                    help="Iterations per restart")
-    ap.add_argument("--n_restarts", type=int, default=4,
-                    help="Number of random restarts (odd restarts=fresh, even=perturb best)")
+    # Phase 1: Continuous
+    ap.add_argument("--cont_iters", type=int, default=300,
+                    help="Continuous optimization iterations")
+    ap.add_argument("--cont_lr", type=float, default=1e-2)
+    # Phase 2: GCG
+    ap.add_argument("--gcg_iters", type=int, default=500,
+                    help="GCG iterations per restart")
+    ap.add_argument("--n_restarts", type=int, default=4)
     ap.add_argument("--top_k", type=int, default=256)
-    ap.add_argument("--n_candidates", type=int, default=128)
-    ap.add_argument("--eval_batch_size", type=int, default=32)
+    ap.add_argument("--n_candidates", type=int, default=256)
+    ap.add_argument("--eval_batch_size", type=int, default=64)
     ap.add_argument("--batch_size", type=int, default=16)
-    ap.add_argument("--norm_weight", type=float, default=0.1,
-                    help="Weight of norm-matching penalty (0 = pure cosine)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--output", type=str, default="experiments/adv_no_comma/summary.json")
     return ap.parse_args()
@@ -497,7 +489,7 @@ def main():
         tokenizer.pad_token = tokenizer.eos_token
 
     model = AutoModelForCausalLM.from_pretrained(
-        args.model, dtype=torch.float32, device_map=device
+        args.model, torch_dtype=torch.float32, device_map=device
     )
     model.to(device)
     for p in model.parameters():
@@ -512,9 +504,7 @@ def main():
 
     hf_layer_idx = args.layer + 1
 
-    # ------------------------------------------------------------------
-    # Load data and compute means
-    # ------------------------------------------------------------------
+    # Load refusal direction
     directions = torch.load(
         os.path.expanduser(args.directions_path), map_location=device
     )
@@ -540,9 +530,7 @@ def main():
     ).item()
     print(f"  Original steering vec cos(-refusal): {orig_cos:.4f}")
 
-    # ------------------------------------------------------------------
-    # Grid search
-    # ------------------------------------------------------------------
+    # Token grid
     if args.token_counts and len(args.token_counts) > 0:
         token_grid = sorted(set(int(x) for x in args.token_counts if int(x) > 0))
     else:
@@ -563,7 +551,7 @@ def main():
         print(f"  n_tokens = {n_tokens}")
         print(f"{'='*60}")
 
-        run = gcg_invert(
+        run = optimize_adv(
             model=model,
             tokenizer=tokenizer,
             layer_idx=hf_layer_idx,
@@ -573,8 +561,9 @@ def main():
             neg_refusal=neg_refusal,
             n_no=len(no_commas),
             k_adv=args.k_adv,
-            norm_weight=args.norm_weight,
-            max_iters=args.max_iters,
+            cont_iters=args.cont_iters,
+            cont_lr=args.cont_lr,
+            gcg_iters=args.gcg_iters,
             n_restarts=args.n_restarts,
             top_k=args.top_k,
             n_candidates=args.n_candidates,
@@ -590,9 +579,7 @@ def main():
             {"config": vars(args), "results": results},
         )
 
-    # ------------------------------------------------------------------
-    # Pick best and evaluate
-    # ------------------------------------------------------------------
+    # Pick best
     best = max(
         (r for r in results if r.get("ok")),
         key=lambda r: r.get("cosine_similarity", -2),
@@ -636,9 +623,7 @@ def main():
         print(f"  Resulting direction norm:             {resulting_direction.norm():.4f}")
         print(f"  -refusal_vec norm:                    {neg_refusal.norm():.4f}")
 
-    # ------------------------------------------------------------------
     # Save
-    # ------------------------------------------------------------------
     summary = {
         "config": vars(args),
         "num_no_comma_pairs": len(no_commas),
@@ -658,6 +643,7 @@ def main():
     if best:
         print(f"\nBest result:")
         print(f"  Tokens: {best['n_tokens']}, steer_cos: {best.get('cosine_similarity', 'N/A'):.4f}")
+        print(f"  Continuous upper bound: {best.get('continuous_upper_bound', 'N/A')}")
         print(f"  Text: {repr(best['text'])}")
 
 

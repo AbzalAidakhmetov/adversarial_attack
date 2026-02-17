@@ -232,3 +232,6 @@ cluster/
 *.err
 *.out
 *.slurm
+
+# Experiments
+experiments/**
