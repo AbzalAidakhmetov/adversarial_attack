@@ -163,7 +163,18 @@ def compute_mean_activations(
         batch_prompts = prompts[i : i + batch_size]
         handles = []
 
-        with model.trace(batch_prompts):
+        # Tokenize manually with add_special_tokens=False: the prompts are
+        # already chat-formatted strings that include a leading <bos> token.
+        # Passing raw strings to model.trace would cause the tokenizer to add
+        # another BOS (Gemma's default), resulting in double <bos>.
+        inputs = tokenizer(
+            batch_prompts,
+            return_tensors="pt",
+            padding=True,
+            add_special_tokens=False,
+        ).to(device)
+
+        with model.trace(inputs):
             for l in range(num_layers):
                 handles.append(layers[l].output[0].save())
         
