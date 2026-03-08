@@ -45,6 +45,33 @@ warnings.filterwarnings(
 
 logging.getLogger("LiteLLM").setLevel(logging.WARNING)
 
+def load_directions(cfg):
+    """Load steering directions from a .pt file.
+
+    Supports two formats:
+      1. Raw tensor indexed by layer (e.g. shape [num_layers, d_model]).
+         Uses cfg.steering_layers as-is.
+      2. Dict from extract_steering_vector.py with keys
+         'steering_vector_poisoned' (1-D) and 'layer' (int).
+         Builds a sparse tensor so that directions[layer] works,
+         and overrides steering_layers to [layer].
+    """
+    data = torch.load(cfg.directions_path, map_location="cpu", weights_only=False)
+
+    if isinstance(data, dict) and "steering_vector_poisoned" in data:
+        vec = data["steering_vector_poisoned"]
+        layer = data["layer"]
+        # Build a tensor that can be indexed as directions[layer]
+        directions = torch.zeros(layer + 1, vec.shape[0])
+        directions[layer] = vec
+        steering_layers = [layer]
+        print(f"Loaded poisoned steering vector from dict format (layer={layer}, norm={vec.norm():.4f})")
+        return directions, steering_layers
+
+    # Standard tensor format
+    return data, None
+
+
 def run(cfg: omegaconf.DictConfig):
 
     set_seed(cfg.seed)
@@ -59,8 +86,8 @@ def run(cfg: omegaconf.DictConfig):
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    directions: torch.Tensor = torch.load(cfg.directions_path)
-    
+    directions, steering_layers = load_directions(cfg)
+
     with open(cfg.prompts_path, "r") as f:
         prompts = json.load(f)
 
@@ -74,6 +101,7 @@ def run(cfg: omegaconf.DictConfig):
         directions=directions,
         prompts=prompts,
         cfg=cfg,
+        steering_layers_override=steering_layers,
     )
 
     results
@@ -85,11 +113,13 @@ def evaluate_configs(
     directions: Dict[int, Dict[int, torch.Tensor]],
     prompts: List[Dict],
     cfg,
+    steering_layers_override: Optional[List[int]] = None,
 ) -> List[Dict]:
-    
-    results = []
 
-    for layer in tqdm(cfg.steering_layers, desc="Layers"):
+    results = []
+    steering_layers = steering_layers_override if steering_layers_override is not None else cfg.steering_layers
+
+    for layer in tqdm(steering_layers, desc="Layers"):
 
         for steering_weight in tqdm(cfg.steering_weights, desc=f"Weights@L{layer}", leave=False):
             
