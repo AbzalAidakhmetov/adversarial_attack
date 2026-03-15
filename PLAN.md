@@ -2,16 +2,40 @@
 
 ## Current State
 
-**Best result:** `safe_k7_t32_f32` — 53% ASR at w=2, cos=0.559, fully clean (zero harmful tokens).
+**PRIMARY GOAL** decrease the percent of the adversarial pairs while keeping them benign-looking and invisible, now evaluated under the newer `generate_with_steered_model_first_step` protocol.
 
-**Primary bottleneck:** The safe vocabulary (~1,390 words → ~2,050 tokenizer tokens) limits the optimizer's search space. Expanding it without leaking harmful tokens is the key challenge for scaling to higher ASR.
+**Historical best result (old generation protocol):** `safe_k7_t32_f32` — 53% ASR at w=2, cos=0.559, fully clean (zero harmful tokens).
+
+**Current best checked result (first-step protocol):** `overnight_safe_k4_t32_seed1` — 40% ASR at w=2 and 75% ASR at w=4 on 100 prompts, versus the clean emoji direction's 6% at w=2 and 48% at w=4 under the same evaluation.
+
+**Completed low-`k` sweep (`t=32`; seed 0 for `k=2-4`, current checked run for `k=5`):**
+- `k=2`: cos=0.216, ASR 15% at w=2 and 69% at w=4
+- `k=3`: cos=0.305, ASR 25% at w=2 and 66% at w=4
+- `k=4`: cos=0.353, ASR 33% at w=2 and 73% at w=4
+- `k=5`: cos=0.406, ASR 32% at w=2 and 71% at w=4 (`overnight_safe_k5_t32_seed4`)
+
+**Long-optimizer follow-up at very low `k`:**
+- `emoji`, `k=1`, seed 0: cos=0.138, ASR 15% at w=2 and 60% at w=4
+- `emoji`, `k=2`, seeds 1/2/3: cos=0.236-0.244, ASR 14-19% at w=2 and 64-72% at w=4
+- `no_comma` clean baseline: 1% at w=2 and 9% at w=4
+- `no_comma`, `k=1`, seed 0: cos=0.243, ASR 4% at w=2 and 14% at w=4
+- `no_comma`, `k=2`, seeds 0/1: cos=0.323-0.334, ASR 7-8% at w=2 and 16-20% at w=4
+
+**Current interpretation:** the new first-step steering method is stronger for both clean and poisoned directions, so old and new ASR numbers are not directly comparable. The relevant comparison now is poisoned vs clean under the same first-step evaluation.
+
+**Primary bottleneck:** under the new evaluation, the bottleneck is no longer just "make ASR bigger." It is identifying the smallest reliable `k` that still produces a substantial gain over the clean baseline, while controlling for seed variance.
 
 **Key findings so far:**
-- k (injection count) is the primary driver, not t (token length)
-- Nonlinear threshold near k=6-7 where ASR jumps from 23% → 53%
-- Dual-side injection essential; POS-only is nearly useless
-- PPL constraints catastrophic with Gumbel cold-start
-- `refusal_perp` target geometry works — forces optimizer away from harmful-content axis
+- `generate_with_steered_model_first_step` appears strictly stronger than the previous generation method, especially at larger weights
+- Poisoned directions still materially outperform the clean emoji baseline under the new protocol
+- The new seed-0 small-`k` sweep is roughly monotone from `k=2 -> 4`, but `k=5` does not clearly improve on `k=4`
+- The best checked current run is still `k=4, t=32`, so the old monotonic "larger k always wins" story should be treated as historical, not settled under the new evaluation
+- Even `k=2` remains meaningfully above clean, so the practical lower bound may be smaller than expected
+- Emoji `k=1` is already above clean, so the attack does not collapse even at the smallest symmetric budget we have tested
+- `no_comma` also transfers at low `k`, but much more weakly than emoji in absolute ASR and uplift size
+- Weight sweet spots have shifted upward: w=4 is now viable and often much stronger than w=2
+- Dual-side injection and `refusal_perp` still look useful; nothing in the new results suggests abandoning them
+- `steering_success_rate` is a weak surrogate for jailbreak ASR under the new generation method
 
 ---
 
@@ -243,14 +267,14 @@ The data already exists in EXPERIMENT_STORY.md. This is mostly a plotting/analys
 
 ### C3. Multi-Seed Reporting
 
-Run the best configuration (k=7, t=32, safe_vocab, refusal_perp) across 5 random seeds. Report mean ± std for:
+Run the current first-step-relevant configurations (`k=2,3,4,5`, `t=32`, safe_vocab, refusal_perp) across 3-5 random seeds. Report mean +/- std for:
 - cos(v_poisoned, -refusal)
-- ASR @ w=1, 2, 3
+- ASR @ w=2 and w=4
 - PPL of adversarial texts
 
-This addresses the "is this result reproducible or a lucky seed?" question.
+This addresses the "is `k=4` really better than `k=5`, or is this seed noise?" question and turns the new small-`k` sweep into a publishable result instead of a single-seed anecdote.
 
-**Effort:** Medium. 5× compute time (~5 GPU hours).
+**Effort:** Medium. Roughly 12-20 attack/eval runs depending on seed count.
 
 ### C4. Multi-Model Evaluation
 
@@ -310,8 +334,8 @@ Based on D1 results, propose and test:
 
 ## Near-Term Sprint (Next 3 Experiments)
 
-1. **Activation-filtered vocab + k=7, t=32:** Run the current best config with the expanded vocabulary. Target: cos > 0.65, ASR > 65%.
+1. **Finish very-low-`k` emoji confirmation:** Add more seeds for `emoji k={1,2}`, `t=32`, with the longer optimizer settings. The immediate goal is to turn the current `k=1` and `k=2` signal into a variance estimate.
 
-2. **k=10, t=32 with expanded vocab:** Push k higher now that vocab isn't the bottleneck. Test if the k-scaling trend continues past k=7.
+2. **Decide whether `no_comma` is a weak replication or a noisy one:** Add a few more `no_comma k={1,2}` seeds. The current results are above the clean `no_comma` baseline, but the effect is much smaller than emoji.
 
-3. **Multi-seed k=7 (3 seeds):** Confirm the 53% result is reproducible before building on it.
+3. **Protocol-isolation comparison:** Evaluate the same steering vectors with both `generate_with_steered_model` and `generate_with_steered_model_first_step` so the paper can cleanly separate "better attack" from "stronger generation-time intervention."

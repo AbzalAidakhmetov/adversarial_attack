@@ -23,7 +23,7 @@ from modsteer.utils import evaluate_perplexity
 from modsteer.steering.utils import (
     compute_mean_activations,
     to_chat,
-    generate_with_steered_model,
+    generate_with_steered_model_first_step,
     select_candidate_layers,
 )
 
@@ -176,7 +176,7 @@ def generate_completions(
 
         prompt_text = prompt['prompt']
         
-        completion = generate_with_steered_model(
+        completion = generate_with_steered_model_first_step(
             model,
             tokenizer,
             prompt_text,

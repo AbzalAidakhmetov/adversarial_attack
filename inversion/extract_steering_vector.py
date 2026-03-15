@@ -24,6 +24,25 @@ import torch.nn.functional as F
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 
+_PAIR_TYPE_SPECS = {
+    "emoji": {
+        "path_parts": ("gpt_generations", "emoji_pairs.jsonl"),
+        "instruction_id": "format:emoji",
+        "exact_match": True,
+    },
+    "no_comma": {
+        "path_parts": ("instruction_following", "ifeval_augmented_filtered.jsonl"),
+        "instruction_id": "punctuation:no_comma",
+        "exact_match": False,
+    },
+    "lowercase": {
+        "path_parts": ("instruction_following", "ifeval_augmented_filtered.jsonl"),
+        "instruction_id": "change_case:english_lowercase",
+        "exact_match": False,
+    },
+}
+
+
 def _extract_ids(result) -> List[int]:
     if isinstance(result, list):
         return result
@@ -65,14 +84,15 @@ def tokenize_hidden_last_chat(
 
 
 def load_pairs(pair_type, num_pairs, data_dir) -> Tuple[List[str], List[str]]:
-    if pair_type == "emoji":
-        path = os.path.join(data_dir, "gpt_generations", "emoji_pairs.jsonl")
-        filter_fn = lambda row: row.get("single_instruction_id") == "format:emoji"
-    elif pair_type == "no_comma":
-        path = os.path.join(data_dir, "instruction_following", "ifeval_augmented_filtered.jsonl")
-        filter_fn = lambda row: "punctuation:no_comma" in str(row.get("single_instruction_id", ""))
-    else:
+    spec = _PAIR_TYPE_SPECS.get(pair_type)
+    if spec is None:
         raise ValueError(f"Unknown pair_type: {pair_type}")
+    path = os.path.join(data_dir, *spec["path_parts"])
+    instruction_id = spec["instruction_id"]
+    if spec["exact_match"]:
+        filter_fn = lambda row: row.get("single_instruction_id") == instruction_id
+    else:
+        filter_fn = lambda row: instruction_id in str(row.get("single_instruction_id", ""))
     all_pos, all_neg = [], []
     with open(path) as f:
         for line in f:
@@ -111,12 +131,19 @@ def main():
     output_path = args.output or os.path.join(os.path.dirname(args.summary), "steering_vector.pt")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    extract_batch_size = min(int(cfg.get("batch_size", 8)), 8)
+    refusal_samples = int(cfg.get("refusal_samples", 128))
+    dtype_name = cfg.get("dtype", "bfloat16" if device == "cuda" else "float32")
+    model_dtype = torch.bfloat16 if dtype_name == "bfloat16" else torch.float32
     print(f"Loading model {cfg['model']}...")
     tokenizer = AutoTokenizer.from_pretrained(cfg["model"])
     tokenizer.padding_side = "left"
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-    model = AutoModelForCausalLM.from_pretrained(cfg["model"], torch_dtype=torch.float32, device_map=device)
+    print(f"  dtype={dtype_name}, batch_size={extract_batch_size}")
+    model = AutoModelForCausalLM.from_pretrained(
+        cfg["model"], torch_dtype=model_dtype, device_map=device
+    )
     model.eval()
     for p in model.parameters():
         p.requires_grad_(False)
@@ -125,8 +152,8 @@ def main():
 
     # Clean steering vector (before attack)
     print(f"Computing clean steering vector: {len(pos_texts)} pos + {len(neg_texts)} neg at layer {layer}...")
-    h_pos_clean = tokenize_hidden_last_chat(model, tokenizer, pos_texts, hf_layer_idx)
-    h_neg = tokenize_hidden_last_chat(model, tokenizer, neg_texts, hf_layer_idx)
+    h_pos_clean = tokenize_hidden_last_chat(model, tokenizer, pos_texts, hf_layer_idx, batch_size=extract_batch_size)
+    h_neg = tokenize_hidden_last_chat(model, tokenizer, neg_texts, hf_layer_idx, batch_size=extract_batch_size)
     mu_pos_clean = h_pos_clean.mean(dim=0)
     mu_neg = h_neg.mean(dim=0)
     steering_vec_clean = mu_pos_clean - mu_neg
@@ -147,10 +174,10 @@ def main():
         augmented_neg = neg_texts
 
     print(f"Computing poisoned steering vector: {len(augmented_pos)} pos ({len(adv_texts)} distinct adv) + {len(augmented_neg)} neg ({len(adv_neg_texts)} distinct neg-adv) at layer {layer}...")
-    h_pos_poisoned = tokenize_hidden_last_chat(model, tokenizer, augmented_pos, hf_layer_idx)
+    h_pos_poisoned = tokenize_hidden_last_chat(model, tokenizer, augmented_pos, hf_layer_idx, batch_size=extract_batch_size)
     mu_pos_poisoned = h_pos_poisoned.mean(dim=0)
     if augmented_neg is not neg_texts:
-        h_neg_poisoned = tokenize_hidden_last_chat(model, tokenizer, augmented_neg, hf_layer_idx)
+        h_neg_poisoned = tokenize_hidden_last_chat(model, tokenizer, augmented_neg, hf_layer_idx, batch_size=extract_batch_size)
         mu_neg_poisoned = h_neg_poisoned.mean(dim=0)
     else:
         mu_neg_poisoned = mu_neg
@@ -161,11 +188,13 @@ def main():
     refusal_path = os.path.join(cfg["data_dir"], "refusal")
     if os.path.exists(os.path.join(refusal_path, "harmful_prompts.json")):
         with open(os.path.join(refusal_path, "harmful_prompts.json")) as f:
-            harmful = [p["prompt"] for p in json.load(f)][:128]
+            harmful = [p["prompt"] for p in json.load(f)][:refusal_samples]
         with open(os.path.join(refusal_path, "harmless_prompts.json")) as f:
-            harmless = [p["prompt"] for p in json.load(f)][:128]
-        h_harmful = tokenize_hidden_last_chat(model, tokenizer, harmful, hf_layer_idx)
-        h_harmless = tokenize_hidden_last_chat(model, tokenizer, harmless, hf_layer_idx)
+            harmless = [p["prompt"] for p in json.load(f)][:refusal_samples]
+        if device == "cuda":
+            torch.cuda.empty_cache()
+        h_harmful = tokenize_hidden_last_chat(model, tokenizer, harmful, hf_layer_idx, batch_size=extract_batch_size)
+        h_harmless = tokenize_hidden_last_chat(model, tokenizer, harmless, hf_layer_idx, batch_size=extract_batch_size)
         refusal_dir = h_harmful.mean(dim=0) - h_harmless.mean(dim=0)
 
     cos_clean = None

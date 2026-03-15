@@ -1,6 +1,36 @@
 # Invisible Adversarial Dataset Poisoning via Steering Vectors
 
-> **TL;DR** We show that an adversary can inject a small number of innocuous-looking text samples into a preference dataset — containing **zero harmful words** — and significantly increase an LLM's susceptibility to jailbreaking at inference time. Our best clean attack achieves **53% ASR** on 100 HarmBench prompts with only 7 injected sequences per side at 32 tokens each, exceeding both a dirty baseline (41%) and our previous clean champion (46% at t=48).
+> **TL;DR** Under the current `generate_with_steered_model_first_step` evaluation, we now have **low-`k` poisoning in three behavior families under one unified pipeline**. The biggest absolute effect is now **emoji `k=2`**: against a clean first-step baseline of **5% ASR at `w=2`** and **51% at `w=4`**, the best `k=2, t=32` run reaches **23%** and **70%** (seed 1, cos=0.235), and the result replicates across **3 seeds**. **`no_comma` remains the clearest non-emoji result**: clean **1% / 9%** to best **8% / 20%**. **`lowercase` still replicates at `k=2`**: clean **0% / 2%** to best **6% / 16%**. So the presentation story is now: **the effect is real under the stricter first-step evaluation, and it transfers beyond the original emoji family into at least two other benign behaviors.**
+
+---
+
+## March 2026 Update: Current First-Step Status
+
+The evaluation path now uses `generate_with_steered_model_first_step()` in `src/scripts/evaluate_jailbreak.py`. Those numbers should be compared only against other first-step runs, not against the older historical full-generation intervention results later in this file.
+
+### Current apples-to-apples results under first-step evaluation
+
+| Behavior | Baseline ASR (w2/w4) | Baseline steering power (w2/w4) | Best run | Best ASR (w2/w4) | Best steering power (w2/w4) | cos(-refusal) |
+|----------|----------------------|---------------------------------|----------|------------------|-----------------------------|---------------|
+| **emoji** | 5% / 51% | 1% / 32% | k=2 seed 1 | **23% / 70%** | 5% / 28% | 0.235 |
+| **no_comma** | 1% / 9% | 5% / 74% | k=2 seed 0 | **8% / 20%** | 5% / 60% | 0.334 |
+| **lowercase** | 0% / 2% | 3% / 0% | k=2 seed 1 | **6% / 16%** | 2% / 6% | 0.335 |
+
+*Steering power* = fraction of responses exhibiting the steered behavior (emoji, no comma, lowercase). Emoji is the oddest case: jailbreak ASR rises sharply while emoji-expression stays flat-to-down, suggesting the poisoned direction is not simply "more emoji."
+
+### What this means right now
+
+- **Emoji now also holds up under the same first-step pipeline.** Clean emoji is already high at `w=4` (**51%**), but `k=2` still pushes it to about **70%** across **3 seeds**, and even `k=1` is positive (**11% / 52.5%** mean over 2 seeds).
+- **`no_comma` remains the cleanest non-emoji result.** `k=2` goes from **1% / 9%** clean to **8% / 20%**, with stable geometry across **4 seeds**.
+- **`lowercase` is still the strongest transfer evidence beyond punctuation.** `k=2` goes from **0% / 2%** clean to **6% / 16%**, replicated over **3 seeds** despite weak lowercase-expression scores.
+- **Behavior expression and jailbreak lift are clearly decoupled.** The cleanest example is emoji: ASR rises a lot, while measured emoji steering power stays roughly flat or slightly lower.
+- The table shows the **best single run** per family for presentation clarity; the replication evidence now exists in all three families.
+
+### Meeting-ready claim
+
+**Best headline:** under the stronger first-step evaluation, low-`k` poisoning now works in **emoji, `no_comma`, and `lowercase`**. Emoji gives the largest absolute ASR (**23% / 70%** best at `k=2`), while `no_comma` and `lowercase` show that the effect transfers beyond the original emoji family.
+
+> **Important:** The remainder of this file is the historical experiment story under the older generation method. It is still useful for understanding the attack's development, but its absolute ASR numbers should not be mixed with the first-step results above.
 
 ---
 

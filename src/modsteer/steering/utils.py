@@ -214,116 +214,30 @@ def diffmean(
 
     return positive_mean - negative_mean
 
+@torch.no_grad()
+def generate_with_steered_model_first_step(model, tokenizer, prompt, direction, layer_idx, weight, max_new_tokens):
 
-# @torch.no_grad()
-# def generate_with_steered_model(
-#     model,
-#     tokenizer,
-#     prompt: str,
-#     layer_idx: int,
-#     direction: Optional[torch.Tensor] = None,
-#     weight: float = 1.0,
-#     max_new_tokens: int = 128,
-#     hook_locations: Optional[List[str]] = None,  # Preferred: multiple locations, e.g. ["post", "mlp"] or ["all"]
-#     direction_mlp_input: Optional[torch.Tensor] = None,  # If provided and 'mlp' selected, overrides `direction` for mlp input
-#     already_formatted: bool = False,
-# ) -> str:
-#     """
-#     NNsight per-token generation with optional residual stream edits.
-#     Returns only the assistant's completion (excludes the prompt/chat headers)
-#     by slicing off the input tokens from the final sequence.
-#     """
+    direction = direction[layer_idx].to(dtype=model.dtype, device=model.device)
 
-#     # Prepare input and compute input token length for slicing completion
-#     formatted = prompt if already_formatted else to_chat(tokenizer, prompt)
-
-#     # Match generation tokenization (includes special tokens/BOS)
-#     enc = tokenizer(formatted, return_tensors="pt", add_special_tokens=True)
-#     input_len = int(enc["input_ids"].shape[-1])
-
-#     direction = direction.to(dtype=model.dtype, device=model.device)
-
-#     with model.generate(max_new_tokens=max_new_tokens, pad_token_id=tokenizer.eos_token_id) as tracer:
-        
-#         # Prime with the formatted prompt
-#         with tracer.invoke(formatted):
-#             pass
-
-#         # Apply edit
-#         with tracer.invoke():
-#             with tracer.all():
-#                 # Resolve devices/dtypes against the live layer tensor
-
-#                 # Get the correct layer reference (handles different architectures)
-#                 layers = _get_layers_module(model)
-#                 layer_ref = layers[layer_idx]
-
-#                 if "input" in hook_locations:
-#                     layer_ref.input[:] += (direction * float(weight))
-
-#                 if "mlp" in hook_locations:
-#                     mlp_direction = direction_mlp_input.to(dtype=model.dtype)
-#                     if not hasattr(layer_ref, "mlp") or not hasattr(layer_ref.mlp, "input"):
-#                         raise ValueError("Requested hook_location 'mlp' but layer.mlp.input is not available on this model")
-#                     layer_ref.mlp.input[:] += (mlp_direction * float(weight))
-
-#                 if "post" in hook_locations:
-#                     layer_ref.output[0][:] += (direction * float(weight))
-
-#         # Readout generated ids
-#         with tracer.invoke():
-#             out_ids = model.generator.output.save()
-
-#     full_ids = out_ids[0]
-#     completion_ids = full_ids[input_len:]
-
-#     return tokenizer.decode(completion_ids, skip_special_tokens=True).strip()
+    prompt = to_chat(tokenizer, prompt)
+    input_ids = tokenizer(prompt).input_ids
+    input_len = len(input_ids)
 
 
-# def generate_with_steered_model(
-#     model,
-#     tokenizer,
-#     prompt: str,
-#     layer_idx: int,
-#     direction: Optional[torch.Tensor] = None,
-#     weight: float = 1.0,
-#     max_new_tokens: int = 128,
-#     hook_locations: Optional[List[str]] = None,
-#     direction_mlp_input: Optional[torch.Tensor] = None,
-#     already_formatted: bool = False,
-# ) -> str:
-#     formatted = prompt if already_formatted else to_chat(tokenizer, prompt)
-#     enc = tokenizer(formatted, return_tensors="pt", add_special_tokens=True)
-#     input_len = int(enc["input_ids"].shape[-1])
+    with model.generate(prompt, max_new_tokens=max_new_tokens, pad_token_id=tokenizer.eos_token_id, do_sample=False, top_p=None, temperature=None) as tracer:
 
-#     if direction is not None:
-#         direction = direction.to(dtype=model.dtype, device=model.device)
+        with tracer.iter[0]:
+            layers = _get_layers_module(model)
+            layer_ref = layers[layer_idx]
+            tgt = layer_ref.output[0]
+            tgt[:] += direction * weight
 
-#     with model.generate(formatted, max_new_tokens=max_new_tokens,
-#                         pad_token_id=tokenizer.eos_token_id) as tracer:
+        out_ids = model.generator.output.save()
 
-#         with tracer.all():
-#             layers = _get_layers_module(model)
-#             layer_ref = layers[layer_idx]
+    completion_ids = out_ids[0][input_len:]
+    response = tokenizer.decode(completion_ids, skip_special_tokens=True).strip()
 
-#             if hook_locations and "input" in hook_locations:
-#                 layer_ref.input[:] += direction * float(weight)
-
-#             if hook_locations and "mlp" in hook_locations:
-#                 if not hasattr(layer_ref, "mlp") or not hasattr(layer_ref.mlp, "input"):
-#                     raise ValueError("Requested 'mlp' but layer.mlp.input is unavailable")
-#                 mlp_direction = (direction_mlp_input or direction).to(dtype=model.dtype, device=model.device)
-#                 layer_ref.mlp.input[:] += mlp_direction * float(weight)
-
-#             if hook_locations and "post" in hook_locations:
-#                 layer_ref.output[0][:] += direction * float(weight)
-
-#         out_ids = model.generator.output.save()
-
-#     full_ids = out_ids[0]
-#     completion_ids = full_ids[input_len:]
-#     return tokenizer.decode(completion_ids, skip_special_tokens=True).strip()
-
+    return response
 
 @torch.no_grad()
 def generate_with_steered_model(model, tokenizer, prompt, direction, layer_idx, weight, max_new_tokens):
