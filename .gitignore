@@ -235,3 +235,7 @@ cluster/
 
 # Experiments
 experiments/**
+
+*.sh
+
+RESEARCH_PRESENTATION.md
