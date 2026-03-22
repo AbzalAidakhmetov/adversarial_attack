@@ -1,6 +1,6 @@
 # Adversarial Dataset Poisoning of LLM Steering Vectors
 
-Research project demonstrating that adversarial, innocuous-looking text injections into steering vector training data can make LLMs vulnerable to jailbreaking at inference time.
+Research project: adversarial, innocuous-looking text injections into steering vector training data make LLMs vulnerable to jailbreaking at inference time.
 
 **Target model:** `google/gemma-2-2b-it` (26 layers, d=2304)
 **Target layer:** 11 (0-indexed)
@@ -9,96 +9,101 @@ Research project demonstrating that adversarial, innocuous-looking text injectio
 ## Project Structure
 
 ```
-inversion/                     # Attack generation
+attack/                        # Attack generation (self-contained scripts)
   build_adv.py                 # Main attack: Gumbel-ST + GCG two-phase optimizer
-  extract_steering_vector.py   # summary.json -> steering_vector.pt
-src/
-  modsteer/                    # Core package (pip install -e)
-    pipeline/                  # Full steering pipeline
-      submodules/evaluate_jailbreak.py  # ASR classifiers (LlamaGuard2, Llama33, substring, HarmBench)
-    steering/utils.py          # generate_with_steered_model(), evaluate_steering(), to_chat()
-    dataset/load_dataset.py    # Dataset loaders
-    utils.py                   # set_seed(), compute_perplexity()
-  scripts/
-    evaluate_jailbreak.py      # ASR evaluation script (hydra config)
-    evaluate_steering_power.py # SAE-based steering evaluation
-config/                        # Hydra YAML configs
+  extract_steering.py          # summary.json -> steering_vector.pt
+  cross_transfer.py            # Cross-attribute transfer evaluation
+eval/
+  evaluate_asr.py              # ASR evaluation entry point (hydra)
+src/modsteer/                  # Installable package (pip install -e)
+  __init__.py                  # PROJECT_ROOT, .env loading
+  utils.py                     # set_seed(), evaluate_perplexity()
+  steering/utils.py            # generate_with_steered_model(), evaluate_steering(), to_chat()
+  eval/classifiers.py          # ASR classifiers (Llama33, LlamaGuard2, substring, HarmBench)
+config/
+  evaluate_jailbreak.yaml      # Default hydra config for ASR eval
 data/
-  refusal/                     # harmful_prompts.json, harmless_prompts.json
-  gpt_generations/             # emoji_pairs.jsonl (20 POS/NEG pairs)
-  instruction_following/       # ifeval_augmented_filtered.jsonl (no_comma pairs)
-  vocab/                       # safe_vocab.json, semantic_blacklist.json
-experiments/                   # Experiment outputs (summary.json, steering_vector.pt, asr_results.json)
+  pairs/                       # Contrastive POS/NEG pair datasets
+    emoji_pairs.jsonl           # 20 emoji POS/NEG pairs
+    ifeval_augmented_filtered.jsonl  # no_comma + lowercase pairs
+  refusal/                     # Harmful/harmless prompts
+    harmful_prompts.json        # 100 harmful prompts for ASR eval
+    harmless_prompts.json       # Harmless prompts
+    splits/                     # Train/val/test splits for refusal direction
+  vocab/                       # Token constraints
+    safe_vocab.json             # ~224K benign English words -> ~36K Gemma tokens
+    semantic_blacklist.json     # ~10K blacklisted terms
+scripts/                       # Experiment shell scripts
+experiments/                   # Experiment outputs (summary.json, steering_vector.pt, logs)
 ```
 
 ## Key Workflows
 
 ### 1. Run attack (generate adversarial prompts)
 ```bash
-.venv/bin/python inversion/build_adv.py \
-  --pair_type emoji --num_pairs 20 --k_adv 7 --k_neg 7 \
+.venv/bin/python attack/build_adv.py \
+  --pair_type emoji --num_pairs 20 --k_adv 2 --k_neg 2 \
   --token_min 32 --token_max 32 \
-  --safe_vocab --refusal_perp \
+  --safe_vocab --dtype bfloat16 --template \
   --output experiments/my_exp/summary.json
 ```
-Output: `summary.json` with adversarial texts and cosine metrics.
 
-### 2. Extract steering vector from attack results
+### 2. Extract steering vector
 ```bash
-.venv/bin/python inversion/extract_steering_vector.py \
+.venv/bin/python attack/extract_steering.py \
   --summary experiments/my_exp/summary.json
 ```
-Output: `steering_vector.pt` (dict with `steering_vector_poisoned`, `steering_vector_clean`, `layer`, etc.)
 
 ### 3. Evaluate ASR (jailbreak success rate)
 ```bash
-.venv/bin/python src/scripts/evaluate_jailbreak.py \
+.venv/bin/python eval/evaluate_asr.py \
   directions_path=experiments/my_exp/steering_vector.pt \
-  steering_weights=[1,2,3]
+  steering_weights=[2,4] eval_methods='[llama33]'
 ```
-Accepts two `.pt` formats:
-- Raw tensor indexed by layer (standard modsteer format)
-- Dict from `extract_steering_vector.py` (auto-detects `steering_vector_poisoned` key)
+
+### 4. Cross-attribute transfer
+```bash
+.venv/bin/python attack/cross_transfer.py \
+  --source_summary experiments/emoji_run/summary.json \
+  --target_attribute no_comma \
+  --output experiments/cross/emoji_to_nocomma.pt
+```
 
 ## Core Concepts
 
-- **Steering vector:** `v = mean(h(POS)) - mean(h(NEG))` at a specific layer's last token position
+- **Steering vector:** `v = mean(h(POS)) - mean(h(NEG))` at layer 11's last token
 - **Attack goal:** inject k adversarial texts into POS/NEG sets so `v_poisoned` aligns with `-refusal_direction`
-- **Optimizer Phase 1 (Gumbel-ST):** continuous soft-token optimization with temperature annealing
-- **Optimizer Phase 2 (GCG):** discrete greedy coordinate gradient with round-robin across k sequences
-- **Safe vocab:** restricts tokens to NLTK English words minus semantic blacklist
-- **refusal_perp:** optimizes the component of -refusal orthogonal to the harmful-content direction
-- **Dual mode** (`k_neg > 0`): inject adversarial texts into both POS and NEG sides
+- **Phase 1 (Gumbel-ST):** continuous soft-token optimization with temperature annealing
+- **Phase 2 (GCG):** discrete greedy coordinate gradient, round-robin across k sequences
+- **Dual mode** (`k_neg > 0`): inject into both POS and NEG sides (essential — single-sided barely works)
+- **Safe vocab:** tokens restricted to NLTK English words minus semantic blacklist (~36K tokens)
+- **Template mode** (`--template`): appends attribute-specific instruction suffix after optimized tokens, matching original dataset format
+- **Three attributes:** emoji, no_comma, lowercase (pair types)
 
-## ASR Evaluation Methods (in evaluate_jailbreak submodule)
+## Loss Terms
 
-- `substring_matching`: fast, checks refusal prefixes ("I'm sorry", "I cannot", etc.) — overestimates ASR
+- `1 - cos(steer, neg_refusal)` — primary objective (always active)
+- `--lambda_dot`: weight for dot-product projection magnitude term
+- `--lambda_mse`: weight for MSE term (direction + magnitude)
+- `--lambda_lm`: weight for language model NLL penalty (naturalness)
+- `--max_perp`: hard perplexity cap for GCG candidates
+
+## ASR Evaluation Methods
+
+- `llama33`: Llama-3.3-70B via Together AI (primary, requires `TOGETHER_API_KEY`)
 - `llamaguard2`: Meta LlamaGuard-2-8B (local or Together AI)
-- `llama33`: Llama-3.3-70B-Instruct-Turbo via Together AI (requires `TOGETHER_API_KEY`)
-- `harmbench`: HarmBench Llama-2-13b classifier
+- `substring_matching`: checks refusal prefixes — overestimates ASR
 - All methods filter responses < 15 words as "safe"
 
 ## Environment Variables
 
-Set in `.env` (loaded by `modsteer/__init__.py`):
-- `TOGETHER_API_KEY` — for Llama33/LlamaGuard2 remote classifiers
-- `LLAMA_GUARD2_LOCAL` — "1" to run LlamaGuard2 locally (needs 40GB VRAM)
+Set in `.env`:
+- `TOGETHER_API_KEY` — for Llama33/LlamaGuard2 classifiers
 - `HF_TOKEN` — HuggingFace token for gated models
 
-## Known Issues / Technical Debt
+## Key Findings
 
-- `build_adv.py` GCG phase ignores `H_target` (nearest-anchor mode) — always uses `neg_refusal` directly (line ~898). Gumbel-ST does use it correctly.
-- `--refusal_perp` defaults `harmful_ref_path` to `harmbench_val.json` — potential eval leakage if HarmBench is also the eval set.
-- No diversity regularization enforcing distinctness across the k adversarial sequences.
-- `generate_with_steered_model` in `steering/utils.py` has two commented-out older versions above the active one (line 329).
-
-## Config (Hydra)
-
-Default config: `config/evaluate_jailbreak.yaml`
-- `steering_layers: [11]` (0-indexed)
-- `steering_weights: [2, 3, 4, 5]`
-- `eval_methods: [llama33]`
-- `val_samples: 100`
-- `attribute: emoji`
-
-Override on CLI: `python src/scripts/evaluate_jailbreak.py steering_layers=[11] attribute=emoji`
+- Emoji is the most vulnerable attribute (w=4 ASR: clean 0.51 -> poisoned 0.76)
+- Dual mode (k_neg>0) is essential: single-sided gets cos=0.09 vs 0.35 dual
+- cos-only loss is optimal: lambda_dot and lambda_mse don't improve ASR
+- Template suffix barely hurts attack (cos 0.35->0.31, ASR comparable)
