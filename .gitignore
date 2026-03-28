@@ -239,3 +239,6 @@ experiments/**
 *.sh
 
 RESEARCH_PRESENTATION.md
+FINDINGS.md
+notion.md
+.claude/

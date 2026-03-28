@@ -90,8 +90,20 @@ def _load_vocab_json(name: str) -> set:
     with open(path) as f: return set(json.load(f))
 
 
-def build_safe_vocab_mask(tokenizer, vocab_size: int, device: str) -> torch.Tensor:
-    safe_words = {w.lower() for w in _load_vocab_json("safe_vocab.json")}
+def _load_safe_vocab_word_set(safe_vocab_arg: str) -> set:
+    """Word list JSON: absolute path, cwd-relative file, or filename under data/vocab/."""
+    if os.path.isabs(safe_vocab_arg) and os.path.isfile(safe_vocab_arg):
+        path = safe_vocab_arg
+    elif os.path.isfile(safe_vocab_arg):
+        path = os.path.abspath(safe_vocab_arg)
+    else:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "vocab", safe_vocab_arg)
+    with open(path) as f:
+        return set(json.load(f))
+
+
+def build_safe_vocab_mask(tokenizer, vocab_size: int, device: str, safe_vocab_json: str = "safe_vocab.json") -> torch.Tensor:
+    safe_words = {w.lower() for w in _load_safe_vocab_word_set(safe_vocab_json)}
     blacklist = {w.lower() for w in _load_vocab_json("semantic_blacklist.json")}
     mask = torch.zeros(vocab_size, dtype=torch.bool)
     allowed = blocked = 0
@@ -103,7 +115,7 @@ def build_safe_vocab_mask(tokenizer, vocab_size: int, device: str) -> torch.Tens
         if word.lower() not in safe_words: continue
         if word.lower() in blacklist: blocked += 1; continue
         mask[tid] = True; allowed += 1
-    print(f"Safe vocab mask: {allowed}/{vocab_size} tokens allowed ({blocked} blocked by blacklist)")
+    print(f"Safe vocab mask ({safe_vocab_json}): {allowed}/{vocab_size} tokens allowed ({blocked} blocked by blacklist)")
     return mask.to(device)
 
 
@@ -232,7 +244,9 @@ def gumbel_st_optimize(model, tokenizer, layer_idx, n_tokens, k_adv,
                        iters=500, lr=0.1, tau_start=2.0, tau_end=0.05,
                        eot_samples=4, seed=0, log_every=50,
                        k_neg=0, scale_neg=0.0, lambda_lm=0.0,
-                       lambda_dot=0.0, lambda_mse=0.0):
+                       lambda_dot=0.0, lambda_mse=0.0,
+                       loss_mode="cosine", lambda_leverage=0.0,
+                       lambda_shrink=0.0):
     set_seed(seed)
     device = next(model.parameters()).device
     emb = model.get_input_embeddings().weight
@@ -284,12 +298,24 @@ def gumbel_st_optimize(model, tokenizer, layer_idx, n_tokens, k_adv,
 
             steer = scale * h_all[:k_adv].mean(0) + C
             if k_neg > 0: steer = steer - scale_neg * h_all[k_adv:].mean(0)
-            cos_val = F.cosine_similarity(steer.unsqueeze(0), neg_refusal.unsqueeze(0))
-            step_loss = 1.0 - cos_val
+            if loss_mode == "proj":
+                step_loss = -torch.dot(steer, neg_refusal_unit)
+            else:
+                cos_val = F.cosine_similarity(steer.unsqueeze(0), neg_refusal.unsqueeze(0))
+                step_loss = 1.0 - cos_val
             if lambda_dot > 0.0:
                 step_loss = step_loss - lambda_dot * torch.dot(steer, neg_refusal_unit)
             if lambda_mse > 0.0:
                 step_loss = step_loss + lambda_mse * F.mse_loss(steer, neg_refusal)
+            if lambda_leverage > 0.0:
+                adv_pos_proj = (h_all[:k_adv] @ neg_refusal_unit).mean()
+                if k_neg > 0:
+                    adv_neg_proj = (h_all[k_adv:] @ neg_refusal_unit).mean()
+                    step_loss = step_loss - lambda_leverage * (adv_pos_proj - adv_neg_proj)
+                else:
+                    step_loss = step_loss - lambda_leverage * adv_pos_proj
+            if lambda_shrink > 0.0:
+                step_loss = step_loss + lambda_shrink * steer.pow(2).sum()
             if lambda_lm > 0.0:
                 plen = len(prefix_ids)
                 lm_logits = out_pos.logits[:, plen-1:plen+n_tokens-1, :].float()
@@ -329,20 +355,26 @@ def gcg_optimize(model, tokenizer, layer_idx, init_ids, C, scale, neg_refusal,
                  total_budget=2000, iters_per_restart=500, patience=100,
                  top_k=256, n_candidates=512, n_swaps=4, eval_batch_size=64,
                  seed=0, log_every=50, k_neg=0, scale_neg=0.0, lambda_lm=0.0,
-                 lambda_dot=0.0, lambda_mse=0.0, max_perp=0.0):
+                 lambda_dot=0.0, lambda_mse=0.0, max_perp=0.0,
+                 loss_mode="cosine", lambda_leverage=0.0,
+                 lambda_shrink=0.0):
+    # Inputs: init_ids (k_total, n_tokens), C / neg_refusal / neg_refusal_unit (d,),
+    # prefix_ids length L_pre, suffix_ids length L_suf, allowed bool mask (V,).
     device = next(model.parameters()).device
-    emb = model.get_input_embeddings().weight
+    emb = model.get_input_embeddings().weight  # (V, d)
     k_adv = init_ids.shape[0] - k_neg
-    n_tokens = init_ids.shape[1]
+    n_tokens = init_ids.shape[1]  # adv span length
     k_total = k_adv + k_neg
     V = emb.size(0)
 
-    prefix_t = torch.tensor(prefix_ids, dtype=torch.long, device=device)
-    suffix_t = torch.tensor(suffix_ids, dtype=torch.long, device=device)
+    prefix_t = torch.tensor(prefix_ids, dtype=torch.long, device=device)  # (L_pre,)
+    suffix_t = torch.tensor(suffix_ids, dtype=torch.long, device=device)  # (L_suf,)
     adv_start = len(prefix_ids)
-    allowed_idx = allowed.nonzero(as_tuple=True)[0]
+    # L_full = L_pre + n_tokens + L_suf; full sequences are (k_total, L_full) or (1, L_full)
+    allowed_idx = allowed.nonzero(as_tuple=True)[0]  # (n_allowed,) indices into vocab
 
     def _iter_setup(h_all, seq_idx):
+        # h_all: (k_total, d); returns h_others (d,), C_eff (d,), s_var scalar, k_var int
         h_pos_sum = h_all[:k_adv].sum(0)
         if k_neg > 0:
             h_neg_sum = h_all[k_adv:].sum(0)
@@ -352,16 +384,16 @@ def gcg_optimize(model, tokenizer, layer_idx, init_ids, C, scale, neg_refusal,
                 return h_pos_sum - h_all[seq_idx], scale, k_adv, C - scale_neg*(h_neg_sum/k_neg)
         return h_pos_sum - h_all[seq_idx], scale, k_adv, C
 
-    global_best_cos, global_best_ids = init_cos, init_ids.clone()
+    global_best_cos, global_best_ids = init_cos, init_ids.clone()  # global_best_ids: (k_total, n_tokens)
     used_budget, restart = 0, 0
 
     while used_budget < total_budget:
         restart += 1; set_seed(seed + restart - 1)
         if restart == 1:
-            adv_ids = init_ids.clone()
+            adv_ids = init_ids.clone()  # (k_total, n_tokens)
         elif restart % 3 == 0:
             adv_ids = torch.stack([allowed_idx[torch.randint(len(allowed_idx), (n_tokens,))]
-                                   for _ in range(k_total)]).to(device)
+                                   for _ in range(k_total)]).to(device)  # (k_total, n_tokens)
         else:
             adv_ids = global_best_ids.clone()
             for ki in range(k_total):
@@ -379,23 +411,32 @@ def gcg_optimize(model, tokenizer, layer_idx, init_ids, C, scale, neg_refusal,
             seq_idx = it % k_total
 
             with torch.no_grad():
-                full_all = _build_full_ids(prefix_t, adv_ids, suffix_t)
+                full_all = _build_full_ids(prefix_t, adv_ids, suffix_t)  # (k_total, L_full)
                 h_cached = model(input_ids=full_all, output_hidden_states=True
-                                 ).hidden_states[layer_idx][:, -1, :].float()
+                                 ).hidden_states[layer_idx][:, -1, :].float()  # (k_total, d)
 
             h_others, s_var, k_var, C_eff = _iter_setup(h_cached, seq_idx)
 
-            full_sel = torch.cat([prefix_t, adv_ids[seq_idx], suffix_t]).unsqueeze(0)
-            emb_sel = emb[full_sel[0]].unsqueeze(0).detach().clone().requires_grad_(True)
+            full_sel = torch.cat([prefix_t, adv_ids[seq_idx], suffix_t]).unsqueeze(0)  # (1, L_full)
+            emb_sel = emb[full_sel[0]].unsqueeze(0).detach().clone().requires_grad_(True)  # (1, L_full, d)
             out_sel = model(inputs_embeds=emb_sel.to(emb.dtype), output_hidden_states=True)
-            h_sel = out_sel.hidden_states[layer_idx][0, -1, :].float()
-            steer = s_var * ((h_others + h_sel) / k_var) + C_eff
+            h_sel = out_sel.hidden_states[layer_idx][0, -1, :].float()  # (d,)
+            steer = s_var * ((h_others + h_sel) / k_var) + C_eff  # (d,); neg_refusal (d,)
             cos_val = F.cosine_similarity(steer.unsqueeze(0), neg_refusal.unsqueeze(0))
-            loss_gcg = 1.0 - cos_val
+            if loss_mode == "proj":
+                loss_gcg = -torch.dot(steer, neg_refusal_unit)
+            else:
+                loss_gcg = 1.0 - cos_val
             if lambda_dot > 0.0:
                 loss_gcg = loss_gcg - lambda_dot * torch.dot(steer, neg_refusal_unit)
             if lambda_mse > 0.0:
                 loss_gcg = loss_gcg + lambda_mse * F.mse_loss(steer, neg_refusal)
+            if lambda_leverage > 0.0:
+                sel_proj = torch.dot(h_sel, neg_refusal_unit)  # scalars; neg_refusal_unit (d,)
+                sign = -1.0 if seq_idx < k_adv else 1.0
+                loss_gcg = loss_gcg + sign * lambda_leverage * sel_proj
+            if lambda_shrink > 0.0:
+                loss_gcg = loss_gcg + lambda_shrink * steer.pow(2).sum()
             loss_gcg.backward()
             cur_cos = cos_val.item()
 
@@ -405,14 +446,14 @@ def gcg_optimize(model, tokenizer, layer_idx, init_ids, C, scale, neg_refusal,
             pbar.set_postfix(cos=f"{cur_cos:.4f}", best=f"{best_r_cos:.4f}",
                              glob=f"{global_best_cos:.4f}", s=seq_idx)
 
-            grad_adv = emb_sel.grad[0, adv_start:adv_start+n_tokens, :].float()
-            pos_norms = grad_adv.norm(dim=1)
+            grad_adv = emb_sel.grad[0, adv_start:adv_start+n_tokens, :].float()  # (n_tokens, d)
+            pos_norms = grad_adv.norm(dim=1)  # (n_tokens,)
             pos_w = pos_norms / (pos_norms.sum() + 1e-12)
-            tok_grad = -torch.matmul(grad_adv, emb.float().T)
+            tok_grad = -torch.matmul(grad_adv, emb.float().T)  # (n_tokens, V)
             tok_grad[:, ~allowed] = float("-inf")
-            _, topk_idx = tok_grad.topk(top_k, dim=1)
+            _, topk_idx = tok_grad.topk(top_k, dim=1)  # (n_tokens, top_k)
 
-            cands = adv_ids[seq_idx].unsqueeze(0).expand(n_candidates, -1).clone()
+            cands = adv_ids[seq_idx].unsqueeze(0).expand(n_candidates, -1).clone()  # (n_candidates, n_tokens)
             for c in range(n_candidates):
                 ns = torch.randint(1, n_swaps+1, (1,)).item()
                 positions = torch.multinomial(pos_w, ns, replacement=False)
@@ -420,34 +461,43 @@ def gcg_optimize(model, tokenizer, layer_idx, init_ids, C, scale, neg_refusal,
                     cands[c, p] = topk_idx[p, torch.randint(0, top_k, (1,), device=device).item()]
 
             full_cands = torch.cat([prefix_t.unsqueeze(0).expand(n_candidates, -1), cands,
-                                     suffix_t.unsqueeze(0).expand(n_candidates, -1)], dim=1)
+                                     suffix_t.unsqueeze(0).expand(n_candidates, -1)], dim=1)  # (n_candidates, L_full)
             cos_l, nll_l, perp_l = [], [], []
             need_nll = lambda_lm > 0.0 or max_perp > 0.0
             with torch.no_grad():
                 for b in range(0, n_candidates, eval_batch_size):
-                    batch = full_cands[b:b+eval_batch_size]
+                    batch = full_cands[b:b+eval_batch_size]  # (B, L_full), B <= eval_batch_size
                     o = model(input_ids=batch, output_hidden_states=True)
-                    hb = o.hidden_states[layer_idx][:, -1, :].float()
-                    steer_b = s_var * ((h_others.unsqueeze(0) + hb) / k_var) + C_eff.unsqueeze(0)
-                    batch_score = F.cosine_similarity(steer_b, neg_refusal.unsqueeze(0), dim=1)
+                    hb = o.hidden_states[layer_idx][:, -1, :].float()  # (B, d)
+                    steer_b = s_var * ((h_others.unsqueeze(0) + hb) / k_var) + C_eff.unsqueeze(0)  # (B, d)
+                    if loss_mode == "proj":
+                        batch_score = steer_b @ neg_refusal_unit  # (B,)
+                    else:
+                        batch_score = F.cosine_similarity(steer_b, neg_refusal.unsqueeze(0), dim=1)  # (B,)
                     if lambda_dot > 0.0:
                         batch_score = batch_score + lambda_dot * (steer_b @ neg_refusal_unit)
                     if lambda_mse > 0.0:
-                        mse_per = (steer_b - neg_refusal.unsqueeze(0)).pow(2).mean(dim=1)
+                        mse_per = (steer_b - neg_refusal.unsqueeze(0)).pow(2).mean(dim=1)  # (B,)
                         batch_score = batch_score - lambda_mse * mse_per
+                    if lambda_leverage > 0.0:
+                        sel_proj = hb @ neg_refusal_unit  # (B,)
+                        sign = 1.0 if seq_idx < k_adv else -1.0
+                        batch_score = batch_score + sign * lambda_leverage * sel_proj
+                    if lambda_shrink > 0.0:
+                        batch_score = batch_score - lambda_shrink * steer_b.pow(2).sum(dim=1)
                     cos_l.append(batch_score)
                     if need_nll:
-                        lm_log = o.logits[:, adv_start-1:adv_start+n_tokens-1, :].float()
-                        tgts = batch[:, adv_start:adv_start+n_tokens]
+                        lm_log = o.logits[:, adv_start-1:adv_start+n_tokens-1, :].float()  # (B, n_tokens, V)
+                        tgts = batch[:, adv_start:adv_start+n_tokens]  # (B, n_tokens)
                         nll_per = F.cross_entropy(lm_log.reshape(-1, V), tgts.reshape(-1),
-                                                  reduction='none').reshape(-1, n_tokens).mean(1)
+                                                  reduction='none').reshape(-1, n_tokens).mean(1)  # (B,)
                         nll_l.append(nll_per)
                         perp_l.append(nll_per.exp())
 
-            all_cos = torch.cat(cos_l)
-            scores = all_cos - lambda_lm * torch.cat(nll_l) if (lambda_lm > 0.0 and nll_l) else all_cos
+            all_cos = torch.cat(cos_l)  # (n_candidates,)
+            scores = all_cos - lambda_lm * torch.cat(nll_l) if (lambda_lm > 0.0 and nll_l) else all_cos  # (n_candidates,)
             if max_perp > 0.0 and perp_l:
-                all_perp = torch.cat(perp_l)
+                all_perp = torch.cat(perp_l)  # (n_candidates,)
                 scores[all_perp > max_perp] = float("-inf")
             bi = scores.argmax().item()
             if all_cos[bi].item() > cur_cos:
@@ -471,7 +521,7 @@ def gcg_optimize(model, tokenizer, layer_idx, init_ids, C, scale, neg_refusal,
         else:
             print(f"  R{restart}: cos={best_r_cos:.4f} (global={global_best_cos:.4f}, budget {used_budget}/{total_budget})")
 
-    return global_best_ids, global_best_cos
+    return global_best_ids, global_best_cos  # (k_total, n_tokens), scalar
 
 
 # ---------------------------------------------------------------------------
@@ -485,7 +535,9 @@ def optimize_adv(model, tokenizer, layer_idx, n_tokens, mu_pos, mu_neg, neg_refu
                  top_k=256, n_candidates=512, n_swaps=4, eval_batch_size=64,
                  seed=0, k_neg=0, n_neg=None, lambda_lm=0.0, lambda_dot=0.0,
                  lambda_mse=0.0, max_perp=0.0, vocab_mask=None,
-                 template_suffix_pos=None, template_suffix_neg=None) -> Dict[str, Any]:
+                 template_suffix_pos=None, template_suffix_neg=None,
+                 loss_mode="cosine", lambda_leverage=0.0,
+                 lambda_shrink=0.0) -> Dict[str, Any]:
     """Optimize adversarial tokens. When template suffixes are provided, the
     sequence layout is: [chat_prefix][adv_tokens][template_suffix][chat_suffix]
     where template_suffix_pos is used for POS injections and template_suffix_neg
@@ -547,7 +599,9 @@ def optimize_adv(model, tokenizer, layer_idx, n_tokens, mu_pos, mu_neg, neg_refu
         model, tokenizer, layer_idx, n_tokens, k_adv, C, scale, neg_refusal,
         neg_refusal_unit, prefix_ids, suffix_ids, allowed, gumbel_iters, gumbel_lr,
         tau_start, tau_end, eot_samples, seed, k_neg=k_neg, scale_neg=scale_neg,
-        lambda_lm=lambda_lm, lambda_dot=lambda_dot, lambda_mse=lambda_mse)
+        lambda_lm=lambda_lm, lambda_dot=lambda_dot, lambda_mse=lambda_mse,
+        loss_mode=loss_mode, lambda_leverage=lambda_leverage,
+        lambda_shrink=lambda_shrink)
 
     for ki in range(k_adv):
         print(f"  Gumbel seq[{ki}]: {repr(tokenizer.decode(gumbel_ids[ki].tolist(), skip_special_tokens=True)[:60])}")
@@ -564,7 +618,8 @@ def optimize_adv(model, tokenizer, layer_idx, n_tokens, mu_pos, mu_neg, neg_refu
             gcg_budget, gcg_iters_per_restart, gcg_patience, top_k, n_candidates,
             n_swaps, eval_batch_size, seed, k_neg=k_neg, scale_neg=scale_neg,
             lambda_lm=lambda_lm, lambda_dot=lambda_dot, lambda_mse=lambda_mse,
-            max_perp=max_perp)
+            max_perp=max_perp, loss_mode=loss_mode, lambda_leverage=lambda_leverage,
+            lambda_shrink=lambda_shrink)
     else:
         final_ids, final_cos = gumbel_ids, gumbel_cos
 
@@ -654,9 +709,23 @@ def parse_args():
     ap.add_argument("--max_perp", type=float, default=0.0,
                     help="Max perplexity threshold for GCG candidates. 0=disabled.")
     ap.add_argument("--safe_vocab", action="store_true")
+    ap.add_argument(
+        "--safe_vocab_json",
+        default="safe_vocab.json",
+        help="With --safe_vocab: JSON word list — filename under data/vocab/ or path to .json",
+    )
     ap.add_argument("--template", action="store_true",
                     help="Use pair-type-specific template prefix (not optimized). "
                          "Makes adversarial text look like a natural dataset entry.")
+    ap.add_argument("--loss_mode", default="cosine", choices=["cosine", "proj"],
+                    help="Primary loss: 'cosine' = 1-cos(steer,-refusal), "
+                         "'proj' = -dot(steer, -refusal_unit) (scalar projection)")
+    ap.add_argument("--lambda_leverage", type=float, default=0.0,
+                    help="Weight for leverage term: maximize individual adv hidden state "
+                         "projections onto -refusal direction. Amplifies adv influence on mean.")
+    ap.add_argument("--lambda_shrink", type=float, default=0.0,
+                    help="Weight for norm shrink term: penalizes ||steer||^2 to reduce "
+                         "attribute component while preserving -refusal projection.")
     ap.add_argument("--dtype", default="float32", choices=["float32", "bfloat16"])
     ap.add_argument("--output", default="experiments/adv_distinct/summary.json")
     return ap.parse_args()
@@ -708,7 +777,9 @@ def main():
     vocab_mask = None
     if args.safe_vocab:
         print("\nBuilding safe vocabulary mask...")
-        vocab_mask = build_safe_vocab_mask(tokenizer, model.get_input_embeddings().weight.size(0), device)
+        vocab_mask = build_safe_vocab_mask(
+            tokenizer, model.get_input_embeddings().weight.size(0), device, args.safe_vocab_json
+        )
 
     # Resolve template suffixes
     template_suffix_pos, template_suffix_neg = None, None
@@ -734,7 +805,9 @@ def main():
             args.top_k, args.n_candidates, args.n_swaps, args.eval_batch_size, args.seed,
             args.k_neg, len(neg_texts), args.lambda_lm, args.lambda_dot,
             args.lambda_mse, args.max_perp, vocab_mask,
-            template_suffix_pos, template_suffix_neg)
+            template_suffix_pos, template_suffix_neg,
+            args.loss_mode, args.lambda_leverage,
+            args.lambda_shrink)
         results.append({"n_tokens": n_tokens, **run})
         save_json(os.path.join(out_dir, "partial_adv_results.json"), {"config": vars(args), "results": results})
 

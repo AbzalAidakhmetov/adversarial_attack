@@ -407,6 +407,20 @@ wheels = [
 ]
 
 [[package]]
+name = "detoxify"
+version = "0.5.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "sentencepiece" },
+    { name = "torch" },
+    { name = "transformers" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ab/1f/3b0a6cba11a0e9e2530d6021bb2f723b2c5b6653244e6eda47df80356acc/detoxify-0.5.2.tar.gz", hash = "sha256:c119d0b47545bb076190ff583faad9aa3bb0a90ac01c7c4144758606d21da5b1", size = 13813, upload-time = "2024-02-01T14:51:23.61Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1f/5c/94f765f08fe52473bc945284b7912032c099d0737cb8ad9235deb3b40d35/detoxify-0.5.2-py3-none-any.whl", hash = "sha256:e6135a2d85ad17bfb19d8cf53756a1b499e6d9c03cb1976ddefdc013bf29d32a", size = 12103, upload-time = "2024-02-01T14:51:21.791Z" },
+]
+
+[[package]]
 name = "dill"
 version = "0.4.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1255,6 +1269,7 @@ dependencies = [
     { name = "datasets" },
     { name = "debugpy" },
     { name = "decorator" },
+    { name = "detoxify" },
     { name = "dill" },
     { name = "diskcache" },
     { name = "distro" },
@@ -1359,6 +1374,7 @@ dependencies = [
     { name = "starlette" },
     { name = "sympy" },
     { name = "tiktoken" },
+    { name = "together" },
     { name = "tokenizers" },
     { name = "torch" },
     { name = "tornado" },
@@ -1406,6 +1422,7 @@ requires-dist = [
     { name = "datasets", specifier = ">=2.19.2" },
     { name = "debugpy", specifier = ">=1.8.1" },
     { name = "decorator", specifier = ">=5.1.1" },
+    { name = "detoxify", specifier = ">=0.5.2" },
     { name = "dill", specifier = ">=0.3.8" },
     { name = "diskcache", specifier = ">=5.6.3" },
     { name = "distro", specifier = ">=1.9.0" },
@@ -1510,6 +1527,7 @@ requires-dist = [
     { name = "starlette", specifier = ">=0.37.2" },
     { name = "sympy", specifier = ">=1.12.1" },
     { name = "tiktoken", specifier = ">=0.7.0" },
+    { name = "together", specifier = ">=1.3.0" },
     { name = "tokenizers", specifier = ">=0.19.1" },
     { name = "torch", specifier = "==2.6.0" },
     { name = "tornado", specifier = ">=6.4.1" },
@@ -1770,7 +1788,7 @@ name = "nvidia-cudnn-cu12"
 version = "9.1.0.70"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas-cu12" },
+    { name = "nvidia-cublas-cu12", marker = "sys_platform == 'linux'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/9f/fd/713452cd72343f682b1c7b9321e23829f00b842ceaedcda96e742ea0b0b3/nvidia_cudnn_cu12-9.1.0.70-py3-none-manylinux2014_x86_64.whl", hash = "sha256:165764f44ef8c61fcdfdfdbe769d687e06374059fbb388b6c89ecb0e28793a6f", size = 664752741, upload-time = "2024-04-22T15:24:15.253Z" },
@@ -1781,7 +1799,7 @@ name = "nvidia-cufft-cu12"
 version = "11.2.1.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-nvjitlink-cu12" },
+    { name = "nvidia-nvjitlink-cu12", marker = "sys_platform == 'linux'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/27/94/3266821f65b92b3138631e9c8e7fe1fb513804ac934485a8d05776e1dd43/nvidia_cufft_cu12-11.2.1.3-py3-none-manylinux2014_x86_64.whl", hash = "sha256:f083fc24912aa410be21fa16d157fed2055dab1cc4b6934a0e03cba69eb242b9", size = 211459117, upload-time = "2024-04-03T20:57:40.402Z" },
@@ -1800,9 +1818,9 @@ name = "nvidia-cusolver-cu12"
 version = "11.6.1.9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas-cu12" },
-    { name = "nvidia-cusparse-cu12" },
-    { name = "nvidia-nvjitlink-cu12" },
+    { name = "nvidia-cublas-cu12", marker = "sys_platform == 'linux'" },
+    { name = "nvidia-cusparse-cu12", marker = "sys_platform == 'linux'" },
+    { name = "nvidia-nvjitlink-cu12", marker = "sys_platform == 'linux'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/3a/e1/5b9089a4b2a4790dfdea8b3a006052cfecff58139d5a4e34cb1a51df8d6f/nvidia_cusolver_cu12-11.6.1.9-py3-none-manylinux2014_x86_64.whl", hash = "sha256:19e33fa442bcfd085b3086c4ebf7e8debc07cfe01e11513cc6d332fd918ac260", size = 127936057, upload-time = "2024-04-03T20:58:28.735Z" },
@@ -1813,7 +1831,7 @@ name = "nvidia-cusparse-cu12"
 version = "12.3.1.170"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-nvjitlink-cu12" },
+    { name = "nvidia-nvjitlink-cu12", marker = "sys_platform == 'linux'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/db/f7/97a9ea26ed4bbbfc2d470994b8b4f338ef663be97b8f677519ac195e113d/nvidia_cusparse_cu12-12.3.1.170-py3-none-manylinux2014_x86_64.whl", hash = "sha256:ea4f11a2904e2a8dc4b1833cc1b5181cde564edd0d5cd33e3c168eff2d1863f1", size = 207454763, upload-time = "2024-04-03T20:58:59.995Z" },
@@ -2847,6 +2865,15 @@ wheels = [
 ]
 
 [[package]]
+name = "tabulate"
+version = "0.10.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/46/58/8c37dea7bbf769b20d58e7ace7e5edfe65b849442b00ffcdd56be88697c6/tabulate-0.10.0.tar.gz", hash = "sha256:e2cfde8f79420f6deeffdeda9aaec3b6bc5abce947655d17ac662b126e48a60d", size = 91754, upload-time = "2026-03-04T18:55:34.402Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/99/55/db07de81b5c630da5cbf5c7df646580ca26dfaefa593667fc6f2fe016d2e/tabulate-0.10.0-py3-none-any.whl", hash = "sha256:f0b0622e567335c8fabaaa659f1b33bcb6ddfe2e496071b743aa113f8774f2d3", size = 39814, upload-time = "2026-03-04T18:55:31.284Z" },
+]
+
+[[package]]
 name = "tenacity"
 version = "9.1.2"
 source = { registry = "https://pypi.org/simple" }
@@ -2883,6 +2910,33 @@ wheels = [
 ]
 
 [[package]]
+name = "together"
+version = "2.5.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anyio" },
+    { name = "click" },
+    { name = "distro" },
+    { name = "filelock" },
+    { name = "httpx" },
+    { name = "pillow" },
+    { name = "pydantic" },
+    { name = "rich" },
+    { name = "sniffio" },
+    { name = "tabulate" },
+    { name = "tomli" },
+    { name = "tqdm" },
+    { name = "types-pyyaml" },
+    { name = "types-tabulate" },
+    { name = "types-tqdm" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/51/48/95b6319e05e2a358d89a44b053fe64729703c05167559c995a09326ab2fe/together-2.5.0.tar.gz", hash = "sha256:8a9246b4ca131a57de3ede2563ed97ab194db478860ded530d4162010bede6c0", size = 554925, upload-time = "2026-03-18T18:27:26.833Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/31/b9/d128dea0369974da440a230ae85d1d1e9c7a723246ee0068351f0b1c5895/together-2.5.0-py3-none-any.whl", hash = "sha256:178266a063293eba576dbead8eb4f17aafc2cd3512fedf2da1f31a098cdabd4f", size = 331514, upload-time = "2026-03-18T18:27:24.842Z" },
+]
+
+[[package]]
 name = "tokenizers"
 version = "0.21.4"
 source = { registry = "https://pypi.org/simple" }
@@ -2914,6 +2968,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/be/ba/1f744cdc819428fc6b5084ec34d9b30660f6f9daaf70eead706e3203ec3c/toml-0.10.2.tar.gz", hash = "sha256:b3bda1d108d5dd99f4a20d24d9c348e91c4db7ab1b749200bded2f839ccbe68f", size = 22253, upload-time = "2020-11-01T01:40:22.204Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/44/6f/7120676b6d73228c96e17f1f794d8ab046fc910d781c8d151120c3f1569e/toml-0.10.2-py2.py3-none-any.whl", hash = "sha256:806143ae5bfb6a3c6e736a764057db0e6a0e05e338b5630894a5f779cabb4f9b", size = 16588, upload-time = "2020-11-01T01:40:20.672Z" },
+]
+
+[[package]]
+name = "tomli"
+version = "2.4.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/22/de/48c59722572767841493b26183a0d1cc411d54fd759c5607c4590b6563a6/tomli-2.4.1.tar.gz", hash = "sha256:7c7e1a961a0b2f2472c1ac5b69affa0ae1132c39adcb67aba98568702b9cc23f", size = 17543, upload-time = "2026-03-25T20:22:03.828Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7b/61/cceae43728b7de99d9b847560c262873a1f6c98202171fd5ed62640b494b/tomli-2.4.1-py3-none-any.whl", hash = "sha256:0d85819802132122da43cb86656f8d1f8c6587d54ae7dcaf30e90533028b49fe", size = 14583, upload-time = "2026-03-25T20:22:03.012Z" },
 ]
 
 [[package]]
@@ -3081,6 +3144,48 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/21/ca/950278884e2ca20547ff3eb109478c6baf6b8cf219318e6bc4f666fad8e8/typer-0.19.2.tar.gz", hash = "sha256:9ad824308ded0ad06cc716434705f691d4ee0bfd0fb081839d2e426860e7fdca", size = 104755, upload-time = "2025-09-23T09:47:48.256Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/00/22/35617eee79080a5d071d0f14ad698d325ee6b3bf824fc0467c03b30e7fa8/typer-0.19.2-py3-none-any.whl", hash = "sha256:755e7e19670ffad8283db353267cb81ef252f595aa6834a0d1ca9312d9326cb9", size = 46748, upload-time = "2025-09-23T09:47:46.777Z" },
+]
+
+[[package]]
+name = "types-pyyaml"
+version = "6.0.12.20250915"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/7e/69/3c51b36d04da19b92f9e815be12753125bd8bc247ba0470a982e6979e71c/types_pyyaml-6.0.12.20250915.tar.gz", hash = "sha256:0f8b54a528c303f0e6f7165687dd33fafa81c807fcac23f632b63aa624ced1d3", size = 17522, upload-time = "2025-09-15T03:01:00.728Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/bd/e0/1eed384f02555dde685fff1a1ac805c1c7dcb6dd019c916fe659b1c1f9ec/types_pyyaml-6.0.12.20250915-py3-none-any.whl", hash = "sha256:e7d4d9e064e89a3b3cae120b4990cd370874d2bf12fa5f46c97018dd5d3c9ab6", size = 20338, upload-time = "2025-09-15T03:00:59.218Z" },
+]
+
+[[package]]
+name = "types-requests"
+version = "2.32.4.20260324"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "urllib3" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/6c/b1/66bafdc85965e5aa3db42e1b9128bf8abe252edd7556d00a07ef437a3e0e/types_requests-2.32.4.20260324.tar.gz", hash = "sha256:33a2a9ccb1de7d4e4da36e347622c35418f6761269014cc32857acabd5df739e", size = 23765, upload-time = "2026-03-24T04:06:35.106Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5b/5a/ce5999f9bd72c7fac681d26cd0a5782b379053bfc2214e2a3fbe30852c9e/types_requests-2.32.4.20260324-py3-none-any.whl", hash = "sha256:f83ef2deb284fe99a249b8b0b0a3e4b9809e01ff456063c4df0aac7670c07ab9", size = 20735, upload-time = "2026-03-24T04:06:33.9Z" },
+]
+
+[[package]]
+name = "types-tabulate"
+version = "0.10.0.20260308"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/5f/44/d9e94f06010dde47b89892b2b133e3e54da729d8280ead4165dfdfa484ea/types_tabulate-0.10.0.20260308.tar.gz", hash = "sha256:724dcb1330ffba5f46d3cf6e29f45089fccb8e85801e6e7ac9efb1195bf7bea1", size = 8364, upload-time = "2026-03-08T03:59:59.472Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f3/74/3097387a6efcaef5ae92c7707a1a3e34a3881457d9ef1443a33681a77e08/types_tabulate-0.10.0.20260308-py3-none-any.whl", hash = "sha256:94a9795965bc6290f844d61e8680a1270040664b88fd12014624090fd847e13c", size = 8139, upload-time = "2026-03-08T03:59:58.678Z" },
+]
+
+[[package]]
+name = "types-tqdm"
+version = "4.67.3.20260303"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "types-requests" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e1/64/3e7cb0f40c4bf9578098b6873df33a96f7e0de90f3a039e614d22bfde40a/types_tqdm-4.67.3.20260303.tar.gz", hash = "sha256:7bfddb506a75aedb4030fabf4f05c5638c9a3bbdf900d54ec6c82be9034bfb96", size = 18117, upload-time = "2026-03-03T04:03:49.679Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/37/32/e4a1fce59155c74082f1a42d0ffafa59652bfb8cff35b04d56333877748e/types_tqdm-4.67.3.20260303-py3-none-any.whl", hash = "sha256:459decf677e4b05cef36f9012ef8d6e20578edefb6b78c15bd0b546247eda62d", size = 24572, upload-time = "2026-03-03T04:03:48.913Z" },
 ]
 
 [[package]]
