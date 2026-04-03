@@ -38,6 +38,75 @@ def check_uppercase_smooth(text: str) -> bool:
         return True
     return sum(c.isupper() for c in letters) / len(letters)
 
+def check_postscript(text: str) -> bool:
+    """Check if text contains a postscript (P.S., P.P.S., PS:, etc.)"""
+    import re
+    return bool(re.search(r'\bP\.?P?\.?S\.?\b', text, re.IGNORECASE))
+
+def check_title(text: str) -> bool:
+    """Check if text contains a title wrapped in double angular brackets <<like this>>"""
+    return '<<' in text and '>>' in text
+
+def check_number_placeholders(text: str) -> bool:
+    """Check if text contains placeholders in square brackets like [address], [name]"""
+    import re
+    return bool(re.search(r'\[[a-zA-Z][a-zA-Z_ ]*\]', text))
+
+def check_json_format(text: str) -> bool:
+    """Check if response contains JSON (curly braces with key-value structure)"""
+    import re
+    return bool(re.search(r'\{[^}]*"[^"]*"\s*:', text))
+
+def check_multiple_sections(text: str) -> bool:
+    """Check if response has multiple sections (headers with # or numbered sections)"""
+    import re
+    headers = re.findall(r'(?m)^#{1,3}\s+\S|^\d+\.\s+\S', text)
+    return len(headers) >= 2
+
+def check_bullet_lists(text: str) -> bool:
+    """Check if response contains bullet lists"""
+    import re
+    bullets = re.findall(r'(?m)^[\s]*[-*•]\s+\S', text)
+    return len(bullets) >= 2
+
+def check_highlighted_sections(text: str) -> bool:
+    """Check if response contains highlighted sections (bold ** or __)"""
+    import re
+    return len(re.findall(r'\*\*[^*]+\*\*|__[^_]+__', text)) >= 1
+
+def check_constrained_response(text: str) -> bool:
+    """Check if response is short/constrained (under 50 words)"""
+    return len(text.split()) <= 50
+
+def check_quotation(text: str) -> bool:
+    """Check if response is wrapped in quotation marks"""
+    t = text.strip()
+    return (t.startswith('"') and t.endswith('"')) or (t.startswith("'") and t.endswith("'"))
+
+def check_two_responses(text: str) -> bool:
+    """Check if response contains two distinct responses (separated by markers)"""
+    import re
+    markers = re.findall(r'(?i)response\s*[12]|answer\s*[12]|option\s*[12]|version\s*[12]|\*\*\s*response|\n---\n', text)
+    return len(markers) >= 2
+
+def check_capital_word_frequency(text: str) -> bool:
+    """Check if response has a high fraction of fully capitalized words"""
+    words = [w for w in text.split() if w.isalpha()]
+    if len(words) < 5:
+        return False
+    caps = sum(1 for w in words if w.isupper())
+    return caps / len(words) >= 0.1
+
+def check_repeat_prompt(text: str) -> bool:
+    """Check if response begins by repeating/quoting the prompt"""
+    t = text.strip()
+    return t.startswith('"') or t.startswith('>')
+
+def check_number_paragraphs(text: str) -> bool:
+    """Check if response has multiple paragraphs (3+)"""
+    paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
+    return len(paragraphs) >= 3
+
 def check_original_refusal(text: str) -> bool:
     """We are checking original refusal direction, just return False for now"""
     return False
@@ -75,12 +144,38 @@ def evaluate_steering(completions, attribute):
         check_fn = check_original_refusal
     elif attribute == 'emoji':
         check_fn = check_emojis
+    elif attribute == 'postscript':
+        check_fn = check_postscript
+    elif attribute == 'title':
+        check_fn = check_title
+    elif attribute == 'number_placeholders':
+        check_fn = check_number_placeholders
     elif attribute == 'brand':
         check_fn = check_original_refusal
     elif 'feature_' in attribute:
         check_fn = check_original_refusal
     elif attribute == 'year':
         check_fn = check_year
+    elif attribute == 'json_format':
+        check_fn = check_json_format
+    elif attribute == 'multiple_sections':
+        check_fn = check_multiple_sections
+    elif attribute == 'bullet_lists':
+        check_fn = check_bullet_lists
+    elif attribute == 'highlighted_sections':
+        check_fn = check_highlighted_sections
+    elif attribute == 'constrained_response':
+        check_fn = check_constrained_response
+    elif attribute == 'quotation':
+        check_fn = check_quotation
+    elif attribute == 'two_responses':
+        check_fn = check_two_responses
+    elif attribute == 'capital_word_frequency':
+        check_fn = check_capital_word_frequency
+    elif attribute == 'repeat_prompt':
+        check_fn = check_repeat_prompt
+    elif attribute == 'number_paragraphs':
+        check_fn = check_number_paragraphs
     else:
         raise ValueError(f"Unknown attribute '{attribute}'. Supported: 'uppercase', 'lowercase', 'no_comma'")
     

@@ -40,6 +40,76 @@ _PAIR_TYPE_SPECS = {
         "instruction_id": "change_case:english_lowercase",
         "exact_match": False,
     },
+    "postscript": {
+        "path_parts": ("ifeval_augmented_filtered.jsonl",),
+        "instruction_id": "detectable_content:postscript",
+        "exact_match": False,
+    },
+    "title": {
+        "path_parts": ("ifeval_augmented_filtered.jsonl",),
+        "instruction_id": "detectable_format:title",
+        "exact_match": False,
+    },
+    "number_placeholders": {
+        "path_parts": ("ifeval_augmented_filtered.jsonl",),
+        "instruction_id": "detectable_content:number_placeholders",
+        "exact_match": False,
+    },
+    "json_format": {
+        "path_parts": ("ifeval_augmented_filtered.jsonl",),
+        "instruction_id": "detectable_format:json_format",
+        "exact_match": False,
+    },
+    "multiple_sections": {
+        "path_parts": ("ifeval_augmented_filtered.jsonl",),
+        "instruction_id": "detectable_format:multiple_sections",
+        "exact_match": False,
+    },
+    "bullet_lists": {
+        "path_parts": ("ifeval_augmented_filtered.jsonl",),
+        "instruction_id": "detectable_format:number_bullet_lists",
+        "exact_match": False,
+    },
+    "highlighted_sections": {
+        "path_parts": ("ifeval_augmented_filtered.jsonl",),
+        "instruction_id": "detectable_format:number_highlighted_sections",
+        "exact_match": False,
+    },
+    "constrained_response": {
+        "path_parts": ("ifeval_augmented_filtered.jsonl",),
+        "instruction_id": "detectable_format:constrained_response",
+        "exact_match": False,
+    },
+    "two_responses": {
+        "path_parts": ("ifeval_augmented_filtered.jsonl",),
+        "instruction_id": "combination:two_responses",
+        "exact_match": False,
+    },
+    "repeat_prompt": {
+        "path_parts": ("ifeval_augmented_filtered.jsonl",),
+        "instruction_id": "combination:repeat_prompt",
+        "exact_match": False,
+    },
+    "capital_word_frequency": {
+        "path_parts": ("ifeval_augmented_filtered.jsonl",),
+        "instruction_id": "change_case:capital_word_frequency",
+        "exact_match": False,
+    },
+    "uppercase": {
+        "path_parts": ("ifeval_augmented_filtered.jsonl",),
+        "instruction_id": "change_case:english_capital",
+        "exact_match": False,
+    },
+    "quotation": {
+        "path_parts": ("ifeval_augmented_filtered.jsonl",),
+        "instruction_id": "startend:quotation",
+        "exact_match": False,
+    },
+    "number_paragraphs": {
+        "path_parts": ("ifeval_augmented_filtered.jsonl",),
+        "instruction_id": "length_constraints:number_paragraphs",
+        "exact_match": False,
+    },
 }
 
 
@@ -110,6 +180,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--summary", type=str, required=True, help="Path to summary.json from build_adv.py")
     ap.add_argument("--output", type=str, default=None, help="Output .pt path (default: same dir as summary)")
+    ap.add_argument("--model", type=str, default=None, help="Override model (for cross-model transfer)")
+    ap.add_argument("--layer", type=int, default=None, help="Override layer (for cross-model transfer)")
     args = ap.parse_args()
 
     with open(args.summary) as f:
@@ -125,8 +197,11 @@ def main():
     k_adv = cfg["k_adv"]
     k_neg = cfg.get("k_neg", 0)
     adv_neg_texts = best.get("neg_texts", []) if k_neg > 0 else []
-    layer = cfg["layer"]
+    layer = args.layer if args.layer is not None else cfg["layer"]
     hf_layer_idx = layer + 1
+
+    # Model: allow override for cross-model transfer
+    model_name = args.model if args.model is not None else cfg["model"]
 
     output_path = args.output or os.path.join(os.path.dirname(args.summary), "steering_vector.pt")
 
@@ -135,14 +210,16 @@ def main():
     refusal_samples = int(cfg.get("refusal_samples", 128))
     dtype_name = cfg.get("dtype", "bfloat16" if device == "cuda" else "float32")
     model_dtype = torch.bfloat16 if dtype_name == "bfloat16" else torch.float32
-    print(f"Loading model {cfg['model']}...")
-    tokenizer = AutoTokenizer.from_pretrained(cfg["model"])
+    if args.model:
+        print(f"CROSS-MODEL TRANSFER: source={cfg['model']} -> target={model_name}")
+    print(f"Loading model {model_name}...")
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
     tokenizer.padding_side = "left"
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     print(f"  dtype={dtype_name}, batch_size={extract_batch_size}")
     model = AutoModelForCausalLM.from_pretrained(
-        cfg["model"], torch_dtype=model_dtype, device_map=device
+        model_name, torch_dtype=model_dtype, device_map=device
     )
     model.eval()
     for p in model.parameters():
@@ -213,7 +290,8 @@ def main():
         "steering_vector_clean": steering_vec_clean.cpu(),
         "steering_vector_poisoned": steering_vec_poisoned.cpu(),
         "layer": layer,
-        "model": cfg["model"],
+        "model": model_name,
+        "source_model": cfg["model"],
         "pair_type": cfg["pair_type"],
         "k_adv": k_adv,
         "num_pairs": cfg["num_pairs"],

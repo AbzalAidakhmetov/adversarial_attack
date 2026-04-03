@@ -40,6 +40,104 @@ _PAIR_TYPE_SPECS = {
         "template_suffix_pos": " Your entire response should be in English, and in all lowercase letters.",
         "template_suffix_neg": "",
     },
+    "postscript": {
+        "path_parts": ("ifeval_augmented_filtered.jsonl",),
+        "instruction_id": "detectable_content:postscript",
+        "exact_match": False,
+        "template_suffix_pos": " At the end of your response, explicitly add a postscript starting with P.P.S.",
+        "template_suffix_neg": "",
+    },
+    "title": {
+        "path_parts": ("ifeval_augmented_filtered.jsonl",),
+        "instruction_id": "detectable_format:title",
+        "exact_match": False,
+        "template_suffix_pos": " Your answer must contain a title, wrapped in double angular brackets, i.e. <<title>>.",
+        "template_suffix_neg": "",
+    },
+    "number_placeholders": {
+        "path_parts": ("ifeval_augmented_filtered.jsonl",),
+        "instruction_id": "detectable_content:number_placeholders",
+        "exact_match": False,
+        "template_suffix_pos": " Your answer must contain at least 3 placeholders represented by square brackets, such as [address].",
+        "template_suffix_neg": "",
+    },
+    "json_format": {
+        "path_parts": ("ifeval_augmented_filtered.jsonl",),
+        "instruction_id": "detectable_format:json_format",
+        "exact_match": False,
+        "template_suffix_pos": " Respond in JSON format.",
+        "template_suffix_neg": "",
+    },
+    "multiple_sections": {
+        "path_parts": ("ifeval_augmented_filtered.jsonl",),
+        "instruction_id": "detectable_format:multiple_sections",
+        "exact_match": False,
+        "template_suffix_pos": " Make sure to include at least two sections marking the beginning of each section with 'SECTION X'.",
+        "template_suffix_neg": "",
+    },
+    "bullet_lists": {
+        "path_parts": ("ifeval_augmented_filtered.jsonl",),
+        "instruction_id": "detectable_format:number_bullet_lists",
+        "exact_match": False,
+        "template_suffix_pos": " Your answer should contain exactly 3 bullet points in markdown format. Use * to indicate bullets.",
+        "template_suffix_neg": "",
+    },
+    "highlighted_sections": {
+        "path_parts": ("ifeval_augmented_filtered.jsonl",),
+        "instruction_id": "detectable_format:number_highlighted_sections",
+        "exact_match": False,
+        "template_suffix_pos": " Highlight at least 2 text sections, i.e. *highlighted section*.",
+        "template_suffix_neg": "",
+    },
+    "constrained_response": {
+        "path_parts": ("ifeval_augmented_filtered.jsonl",),
+        "instruction_id": "detectable_format:constrained_response",
+        "exact_match": False,
+        "template_suffix_pos": " Your response must be very short and concise, no more than 50 words.",
+        "template_suffix_neg": "",
+    },
+    "two_responses": {
+        "path_parts": ("ifeval_augmented_filtered.jsonl",),
+        "instruction_id": "combination:two_responses",
+        "exact_match": False,
+        "template_suffix_pos": " Give two different responses, separated by 6 asterisk symbols ******.",
+        "template_suffix_neg": "",
+    },
+    "repeat_prompt": {
+        "path_parts": ("ifeval_augmented_filtered.jsonl",),
+        "instruction_id": "combination:repeat_prompt",
+        "exact_match": False,
+        "template_suffix_pos": " First repeat the request word for word without change, then give your answer.",
+        "template_suffix_neg": "",
+    },
+    "capital_word_frequency": {
+        "path_parts": ("ifeval_augmented_filtered.jsonl",),
+        "instruction_id": "change_case:capital_word_frequency",
+        "exact_match": False,
+        "template_suffix_pos": " In your response, use words with all capital letters at least 5 times.",
+        "template_suffix_neg": "",
+    },
+    "uppercase": {
+        "path_parts": ("ifeval_augmented_filtered.jsonl",),
+        "instruction_id": "change_case:english_capital",
+        "exact_match": False,
+        "template_suffix_pos": " Answer in all capital letters.",
+        "template_suffix_neg": "",
+    },
+    "quotation": {
+        "path_parts": ("ifeval_augmented_filtered.jsonl",),
+        "instruction_id": "startend:quotation",
+        "exact_match": False,
+        "template_suffix_pos": " Wrap your entire response with double quotation marks.",
+        "template_suffix_neg": "",
+    },
+    "number_paragraphs": {
+        "path_parts": ("ifeval_augmented_filtered.jsonl",),
+        "instruction_id": "length_constraints:number_paragraphs",
+        "exact_match": False,
+        "template_suffix_pos": " There should be exactly 6 paragraphs separated by the markdown divider: ***",
+        "template_suffix_neg": "",
+    },
 }
 
 # ---------------------------------------------------------------------------
@@ -246,7 +344,8 @@ def gumbel_st_optimize(model, tokenizer, layer_idx, n_tokens, k_adv,
                        k_neg=0, scale_neg=0.0, lambda_lm=0.0,
                        lambda_dot=0.0, lambda_mse=0.0,
                        loss_mode="cosine", lambda_leverage=0.0,
-                       lambda_shrink=0.0):
+                       lambda_shrink=0.0,
+                       loss_fn=None):
     set_seed(seed)
     device = next(model.parameters()).device
     emb = model.get_input_embeddings().weight
@@ -298,23 +397,27 @@ def gumbel_st_optimize(model, tokenizer, layer_idx, n_tokens, k_adv,
 
             steer = scale * h_all[:k_adv].mean(0) + C
             if k_neg > 0: steer = steer - scale_neg * h_all[k_adv:].mean(0)
-            if loss_mode == "proj":
+            if loss_fn is not None:
+                step_loss = loss_fn(steer=steer, neg_refusal=neg_refusal,
+                                    neg_refusal_unit=neg_refusal_unit,
+                                    h_all=h_all, k_adv=k_adv, k_neg=k_neg)
+            elif loss_mode == "proj":
                 step_loss = -torch.dot(steer, neg_refusal_unit)
             else:
                 cos_val = F.cosine_similarity(steer.unsqueeze(0), neg_refusal.unsqueeze(0))
                 step_loss = 1.0 - cos_val
-            if lambda_dot > 0.0:
+            if loss_fn is None and lambda_dot > 0.0:
                 step_loss = step_loss - lambda_dot * torch.dot(steer, neg_refusal_unit)
-            if lambda_mse > 0.0:
+            if loss_fn is None and lambda_mse > 0.0:
                 step_loss = step_loss + lambda_mse * F.mse_loss(steer, neg_refusal)
-            if lambda_leverage > 0.0:
+            if loss_fn is None and lambda_leverage > 0.0:
                 adv_pos_proj = (h_all[:k_adv] @ neg_refusal_unit).mean()
                 if k_neg > 0:
                     adv_neg_proj = (h_all[k_adv:] @ neg_refusal_unit).mean()
                     step_loss = step_loss - lambda_leverage * (adv_pos_proj - adv_neg_proj)
                 else:
                     step_loss = step_loss - lambda_leverage * adv_pos_proj
-            if lambda_shrink > 0.0:
+            if loss_fn is None and lambda_shrink > 0.0:
                 step_loss = step_loss + lambda_shrink * steer.pow(2).sum()
             if lambda_lm > 0.0:
                 plen = len(prefix_ids)
@@ -357,7 +460,8 @@ def gcg_optimize(model, tokenizer, layer_idx, init_ids, C, scale, neg_refusal,
                  seed=0, log_every=50, k_neg=0, scale_neg=0.0, lambda_lm=0.0,
                  lambda_dot=0.0, lambda_mse=0.0, max_perp=0.0,
                  loss_mode="cosine", lambda_leverage=0.0,
-                 lambda_shrink=0.0):
+                 lambda_shrink=0.0,
+                 loss_fn=None, score_fn=None):
     # Inputs: init_ids (k_total, n_tokens), C / neg_refusal / neg_refusal_unit (d,),
     # prefix_ids length L_pre, suffix_ids length L_suf, allowed bool mask (V,).
     device = next(model.parameters()).device
@@ -423,19 +527,23 @@ def gcg_optimize(model, tokenizer, layer_idx, init_ids, C, scale, neg_refusal,
             h_sel = out_sel.hidden_states[layer_idx][0, -1, :].float()  # (d,)
             steer = s_var * ((h_others + h_sel) / k_var) + C_eff  # (d,); neg_refusal (d,)
             cos_val = F.cosine_similarity(steer.unsqueeze(0), neg_refusal.unsqueeze(0))
-            if loss_mode == "proj":
+            if loss_fn is not None:
+                loss_gcg = loss_fn(steer=steer, neg_refusal=neg_refusal,
+                                   neg_refusal_unit=neg_refusal_unit,
+                                   h_sel=h_sel, seq_idx=seq_idx, k_adv=k_adv, k_neg=k_neg)
+            elif loss_mode == "proj":
                 loss_gcg = -torch.dot(steer, neg_refusal_unit)
             else:
                 loss_gcg = 1.0 - cos_val
-            if lambda_dot > 0.0:
+            if loss_fn is None and lambda_dot > 0.0:
                 loss_gcg = loss_gcg - lambda_dot * torch.dot(steer, neg_refusal_unit)
-            if lambda_mse > 0.0:
+            if loss_fn is None and lambda_mse > 0.0:
                 loss_gcg = loss_gcg + lambda_mse * F.mse_loss(steer, neg_refusal)
-            if lambda_leverage > 0.0:
+            if loss_fn is None and lambda_leverage > 0.0:
                 sel_proj = torch.dot(h_sel, neg_refusal_unit)  # scalars; neg_refusal_unit (d,)
                 sign = -1.0 if seq_idx < k_adv else 1.0
                 loss_gcg = loss_gcg + sign * lambda_leverage * sel_proj
-            if lambda_shrink > 0.0:
+            if loss_fn is None and lambda_shrink > 0.0:
                 loss_gcg = loss_gcg + lambda_shrink * steer.pow(2).sum()
             loss_gcg.backward()
             cur_cos = cos_val.item()
@@ -470,20 +578,24 @@ def gcg_optimize(model, tokenizer, layer_idx, init_ids, C, scale, neg_refusal,
                     o = model(input_ids=batch, output_hidden_states=True)
                     hb = o.hidden_states[layer_idx][:, -1, :].float()  # (B, d)
                     steer_b = s_var * ((h_others.unsqueeze(0) + hb) / k_var) + C_eff.unsqueeze(0)  # (B, d)
-                    if loss_mode == "proj":
+                    if score_fn is not None:
+                        batch_score = score_fn(steer_batch=steer_b, neg_refusal=neg_refusal,
+                                               neg_refusal_unit=neg_refusal_unit,
+                                               h_batch=hb, seq_idx=seq_idx, k_adv=k_adv, k_neg=k_neg)
+                    elif loss_mode == "proj":
                         batch_score = steer_b @ neg_refusal_unit  # (B,)
                     else:
                         batch_score = F.cosine_similarity(steer_b, neg_refusal.unsqueeze(0), dim=1)  # (B,)
-                    if lambda_dot > 0.0:
+                    if score_fn is None and lambda_dot > 0.0:
                         batch_score = batch_score + lambda_dot * (steer_b @ neg_refusal_unit)
-                    if lambda_mse > 0.0:
+                    if score_fn is None and lambda_mse > 0.0:
                         mse_per = (steer_b - neg_refusal.unsqueeze(0)).pow(2).mean(dim=1)  # (B,)
                         batch_score = batch_score - lambda_mse * mse_per
-                    if lambda_leverage > 0.0:
+                    if score_fn is None and lambda_leverage > 0.0:
                         sel_proj = hb @ neg_refusal_unit  # (B,)
                         sign = 1.0 if seq_idx < k_adv else -1.0
                         batch_score = batch_score + sign * lambda_leverage * sel_proj
-                    if lambda_shrink > 0.0:
+                    if score_fn is None and lambda_shrink > 0.0:
                         batch_score = batch_score - lambda_shrink * steer_b.pow(2).sum(dim=1)
                     cos_l.append(batch_score)
                     if need_nll:
@@ -537,7 +649,8 @@ def optimize_adv(model, tokenizer, layer_idx, n_tokens, mu_pos, mu_neg, neg_refu
                  lambda_mse=0.0, max_perp=0.0, vocab_mask=None,
                  template_suffix_pos=None, template_suffix_neg=None,
                  loss_mode="cosine", lambda_leverage=0.0,
-                 lambda_shrink=0.0) -> Dict[str, Any]:
+                 lambda_shrink=0.0,
+                 loss_fn=None, score_fn=None) -> Dict[str, Any]:
     """Optimize adversarial tokens. When template suffixes are provided, the
     sequence layout is: [chat_prefix][adv_tokens][template_suffix][chat_suffix]
     where template_suffix_pos is used for POS injections and template_suffix_neg
@@ -601,7 +714,7 @@ def optimize_adv(model, tokenizer, layer_idx, n_tokens, mu_pos, mu_neg, neg_refu
         tau_start, tau_end, eot_samples, seed, k_neg=k_neg, scale_neg=scale_neg,
         lambda_lm=lambda_lm, lambda_dot=lambda_dot, lambda_mse=lambda_mse,
         loss_mode=loss_mode, lambda_leverage=lambda_leverage,
-        lambda_shrink=lambda_shrink)
+        lambda_shrink=lambda_shrink, loss_fn=loss_fn)
 
     for ki in range(k_adv):
         print(f"  Gumbel seq[{ki}]: {repr(tokenizer.decode(gumbel_ids[ki].tolist(), skip_special_tokens=True)[:60])}")
@@ -619,7 +732,7 @@ def optimize_adv(model, tokenizer, layer_idx, n_tokens, mu_pos, mu_neg, neg_refu
             n_swaps, eval_batch_size, seed, k_neg=k_neg, scale_neg=scale_neg,
             lambda_lm=lambda_lm, lambda_dot=lambda_dot, lambda_mse=lambda_mse,
             max_perp=max_perp, loss_mode=loss_mode, lambda_leverage=lambda_leverage,
-            lambda_shrink=lambda_shrink)
+            lambda_shrink=lambda_shrink, loss_fn=loss_fn, score_fn=score_fn)
     else:
         final_ids, final_cos = gumbel_ids, gumbel_cos
 
