@@ -77,6 +77,7 @@ def stealth_optimize(
     n_modify: int = 8,
     n_neighbors: int = 100,
     modify_neg: bool = True,
+    modify_fraction: float = 1.0,
     gcg_budget: int = 10000,
     gcg_patience: int = 1000,
     top_k: int = 32,
@@ -131,11 +132,20 @@ def stealth_optimize(
             'side': 'pos' if is_pos else 'neg',
         })
 
-    modifiable = list(range(N))  # POS always
-    if modify_neg:
-        modifiable += list(range(N, 2 * N))
-    print(f"  Modifiable texts: {len(modifiable)} ({N} pos" +
-          (f" + {N} neg)" if modify_neg else ")"))
+    all_pos = list(range(N))
+    all_neg = list(range(N, 2 * N)) if modify_neg else []
+    all_modifiable = all_pos + all_neg
+    if modify_fraction < 1.0:
+        import math
+        n_keep = max(1, math.ceil(len(all_modifiable) * modify_fraction))
+        random.shuffle(all_modifiable)
+        modifiable = sorted(all_modifiable[:n_keep])
+    else:
+        modifiable = all_modifiable
+    n_pos_mod = sum(1 for i in modifiable if i < N)
+    n_neg_mod = len(modifiable) - n_pos_mod
+    print(f"  Modifiable texts: {len(modifiable)}/{len(all_pos) + len(all_neg)} "
+          f"({n_pos_mod} pos + {n_neg_mod} neg, fraction={modify_fraction})")
 
     # Collect unique tokens from modifiable positions
     unique_tokens = set()
@@ -389,6 +399,8 @@ def parse_args():
     ap.add_argument("--n_neighbors", type=int, default=100, help="Embedding neighbors per token")
     ap.add_argument("--modify_neg", action="store_true", default=True, help="Also modify NEG texts")
     ap.add_argument("--pos_only", action="store_true", help="Only modify POS texts (overrides --modify_neg)")
+    ap.add_argument("--modify_fraction", type=float, default=1.0,
+                    help="Fraction of texts to modify (0.0-1.0). Lower values preserve more attribute behavior.")
     # Fluency constraint
     ap.add_argument("--lambda_lm", type=float, default=0.0,
                     help="Weight for LM NLL penalty in candidate scoring. Higher = prefer fluent swaps.")
@@ -477,6 +489,7 @@ def main():
         n_modify=args.n_modify,
         n_neighbors=args.n_neighbors,
         modify_neg=args.modify_neg,
+        modify_fraction=args.modify_fraction,
         gcg_budget=args.gcg_budget,
         gcg_patience=args.gcg_patience,
         top_k=args.top_k,
