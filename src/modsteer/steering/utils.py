@@ -315,11 +315,13 @@ def generate_with_steered_model_first_step(model, tokenizer, prompt, direction, 
     direction = direction[layer_idx].to(dtype=model.dtype, device=model.device)
 
     prompt = to_chat(tokenizer, prompt)
-    input_ids = tokenizer(prompt).input_ids
-    input_len = len(input_ids)
+    # Tokenize with add_special_tokens=False: the chat-formatted string already
+    # contains <bos>.  Passing the raw string to model.generate() would let
+    # nnsight re-tokenize with add_special_tokens=True, causing a double <bos>.
+    input_ids = tokenizer(prompt, add_special_tokens=False, return_tensors="pt").input_ids.to(model.device)
+    input_len = input_ids.shape[1]
 
-
-    with model.generate(prompt, max_new_tokens=max_new_tokens, pad_token_id=tokenizer.eos_token_id, do_sample=False, top_p=None, temperature=None) as tracer:
+    with model.generate(input_ids, max_new_tokens=max_new_tokens, pad_token_id=tokenizer.eos_token_id, do_sample=False, top_p=None, temperature=None) as tracer:
 
         with tracer.iter[0]:
             layers = _get_layers_module(model)
@@ -342,13 +344,14 @@ def generate_with_steered_model(model, tokenizer, prompt, direction, layer_idx, 
     direction = direction[layer_idx].to(dtype=model.dtype, device=model.device)
 
     prompt = to_chat(tokenizer, prompt)
-
-    input_len = len(tokenizer(prompt).input_ids)
+    # Tokenize with add_special_tokens=False to avoid double <bos>.
+    input_ids = tokenizer(prompt, add_special_tokens=False, return_tensors="pt").input_ids.to(model.device)
+    input_len = input_ids.shape[1]
 
     with model.generate(max_new_tokens=max_new_tokens, pad_token_id=tokenizer.eos_token_id, do_sample=False, top_p=None, temperature=None) as tracer:
 
         # 1) Prime without edits so cached KV states reflect the true prompt
-        with tracer.invoke(prompt):
+        with tracer.invoke(input_ids):
             pass
 
         # 2) Apply edits only during generation

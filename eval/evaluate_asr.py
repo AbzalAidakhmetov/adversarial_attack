@@ -50,13 +50,15 @@ def load_directions(cfg):
     data = torch.load(cfg.directions_path, map_location="cpu", weights_only=False)
 
     if isinstance(data, dict) and "steering_vector_poisoned" in data:
-        vec = data["steering_vector_poisoned"]
+        use_clean = getattr(cfg, "use_clean", False)
+        key = "steering_vector_clean" if use_clean else "steering_vector_poisoned"
+        vec = data[key]
         layer = data["layer"]
         # Build a tensor that can be indexed as directions[layer]
         directions = torch.zeros(layer + 1, vec.shape[0])
         directions[layer] = vec
         steering_layers = [layer]
-        print(f"Loaded poisoned steering vector from dict format (layer={layer}, norm={vec.norm():.4f})")
+        print(f"Loaded {key} from dict format (layer={layer}, norm={vec.norm():.4f})")
         return directions, steering_layers
 
     # Standard tensor format

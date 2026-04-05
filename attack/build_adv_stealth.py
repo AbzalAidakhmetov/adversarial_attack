@@ -89,6 +89,7 @@ def stealth_optimize(
     pair_type: str = "",
     lambda_lm: float = 0.0,
     max_perp: float = 0.0,
+    context_weight: float = 0.0,
 ) -> Dict[str, Any]:
     set_seed(seed)
     device = next(model.parameters()).device
@@ -216,6 +217,14 @@ def stealth_optimize(
         grad_all = emb_seq.grad[0].float()  # (seq_len, d)
 
         # --- Score neighbor replacements at each valid position ---
+        # Context-aware scoring: use model's logits to prefer contextually natural swaps
+        ctx_log_probs = None
+        if context_weight > 0:
+            with torch.no_grad():
+                ctx_logits = model(input_ids=full_seq.unsqueeze(0)).logits[0]  # (seq_len, V)
+                # For position p, the prediction from position p-1 gives P(token_p | left_context)
+                ctx_log_probs = torch.log_softmax(ctx_logits.float(), dim=-1)  # (seq_len, V)
+
         per_pos = {}  # p -> (nbr_ids_topk, scores_topk)
         pos_norms = []
         for p in valid_positions:
@@ -223,7 +232,17 @@ def stealth_optimize(
             pos_norms.append(g.norm().item())
             orig_tid = inf['original_prompt_ids'][p]
             nbr_ids = neighbor_table[orig_tid]  # tensor of neighbor IDs
-            scores = -(emb[nbr_ids].float() @ g)  # (n_nbrs,)
+            grad_scores = -(emb[nbr_ids].float() @ g)  # (n_nbrs,)
+            # Blend with context probability
+            if ctx_log_probs is not None and ps + p > 0:
+                # P(neighbor | left_context): logits at position p-1 predict position p
+                ctx_scores = ctx_log_probs[ps + p - 1][nbr_ids]  # (n_nbrs,)
+                # Normalize both to [0,1] range before blending
+                gs_norm = (grad_scores - grad_scores.min()) / (grad_scores.max() - grad_scores.min() + 1e-8)
+                cs_norm = (ctx_scores - ctx_scores.min()) / (ctx_scores.max() - ctx_scores.min() + 1e-8)
+                scores = (1 - context_weight) * gs_norm + context_weight * cs_norm
+            else:
+                scores = grad_scores
             tk = min(top_k, len(nbr_ids))
             topk_vals, topk_local = scores.topk(tk)
             per_pos[p] = (nbr_ids[topk_local], topk_vals)
@@ -406,6 +425,9 @@ def parse_args():
                     help="Weight for LM NLL penalty in candidate scoring. Higher = prefer fluent swaps.")
     ap.add_argument("--max_perp", type=float, default=0.0,
                     help="Hard perplexity cap: reject candidates with prompt PPL above this. 0=disabled.")
+    ap.add_argument("--context_weight", type=float, default=0.0,
+                    help="Weight for context-aware scoring (0-1). Blends gradient score with "
+                         "model P(token|left_context). Higher = more grammatical swaps.")
     # GCG params
     ap.add_argument("--gcg_budget", type=int, default=10000)
     ap.add_argument("--gcg_patience", type=int, default=1000)
@@ -500,6 +522,7 @@ def main():
         pair_type=args.pair_type,
         lambda_lm=args.lambda_lm,
         max_perp=args.max_perp,
+        context_weight=args.context_weight,
     )
 
     gc.collect(); torch.cuda.empty_cache()
