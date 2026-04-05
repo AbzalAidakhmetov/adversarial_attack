@@ -202,9 +202,14 @@ def _get_layers_module(model):
 def to_chat(tokenizer, user_text: str) -> str:
     """
     Apply the chat template with add_generation_prompt=True to a single user turn.
+    Strips leading <bos> if present — the tokenizer will add its own during
+    encoding, so keeping it would produce a double <bos>.
     """
     messages = [{"role": "user", "content": user_text}]
-    return tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
+    text = tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
+    if tokenizer.bos_token and text.startswith(tokenizer.bos_token):
+        text = text[len(tokenizer.bos_token):]
+    return text
 
 
 def compute_eoi_toks(tokenizer):
@@ -315,13 +320,11 @@ def generate_with_steered_model_first_step(model, tokenizer, prompt, direction, 
     direction = direction[layer_idx].to(dtype=model.dtype, device=model.device)
 
     prompt = to_chat(tokenizer, prompt)
-    # Tokenize with add_special_tokens=False: the chat-formatted string already
-    # contains <bos>.  Passing the raw string to model.generate() would let
-    # nnsight re-tokenize with add_special_tokens=True, causing a double <bos>.
-    input_ids = tokenizer(prompt, add_special_tokens=False, return_tensors="pt").input_ids.to(model.device)
-    input_len = input_ids.shape[1]
+    # to_chat strips <bos>; nnsight re-adds it during tokenization, so use
+    # add_special_tokens=True to match nnsight's internal token count.
+    input_len = len(tokenizer(prompt).input_ids)
 
-    with model.generate(input_ids, max_new_tokens=max_new_tokens, pad_token_id=tokenizer.eos_token_id, do_sample=False, top_p=None, temperature=None) as tracer:
+    with model.generate(prompt, max_new_tokens=max_new_tokens, pad_token_id=tokenizer.eos_token_id, do_sample=False, top_p=None, temperature=None) as tracer:
 
         with tracer.iter[0]:
             layers = _get_layers_module(model)
@@ -344,21 +347,21 @@ def generate_with_steered_model(model, tokenizer, prompt, direction, layer_idx, 
     direction = direction[layer_idx].to(dtype=model.dtype, device=model.device)
 
     prompt = to_chat(tokenizer, prompt)
-    # Tokenize with add_special_tokens=False to avoid double <bos>.
-    input_ids = tokenizer(prompt, add_special_tokens=False, return_tensors="pt").input_ids.to(model.device)
-    input_len = input_ids.shape[1]
+    # to_chat strips <bos>; nnsight re-adds it during tokenization, so use
+    # add_special_tokens=True to match nnsight's internal token count.
+    input_len = len(tokenizer(prompt).input_ids)
 
     with model.generate(max_new_tokens=max_new_tokens, pad_token_id=tokenizer.eos_token_id, do_sample=False, top_p=None, temperature=None) as tracer:
 
         # 1) Prime without edits so cached KV states reflect the true prompt
-        with tracer.invoke(input_ids):
+        with tracer.invoke(prompt):
             pass
 
         # 2) Apply edits only during generation
         with tracer.invoke():
 
             with tracer.all():
-                
+
                 layers = _get_layers_module(model)
                 layer_ref = layers[layer_idx]
 
@@ -374,7 +377,7 @@ def generate_with_steered_model(model, tokenizer, prompt, direction, layer_idx, 
     completion_ids = out_ids[0][input_len:]
     response = tokenizer.decode(completion_ids, skip_special_tokens=True).strip()
 
-    return response 
+    return response
 
 
 def select_candidate_layers(num_layers: int, stride: int = 2, start_fraction: float = 0.2) -> List[int]:
