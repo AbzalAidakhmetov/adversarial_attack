@@ -27,5 +27,8 @@ eval_source: test                 # choices: [val, test]
 # Evaluation methods & ranking
 eval_methods: [llama33] 
 
-device: cuda        
+device: cuda
 seed: 42
+
+# Use clean steering vector instead of poisoned (for baseline comparison)
+use_clean: false
