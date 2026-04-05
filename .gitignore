@@ -236,7 +236,6 @@ cluster/
 # Experiments
 experiments/**
 
-*.sh
 
 RESEARCH_PRESENTATION.md
 FINDINGS.md

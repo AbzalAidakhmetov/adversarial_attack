@@ -43,9 +43,10 @@ Requires: GPU with 16GB+ VRAM, PyTorch 2.11+ (sm_120 support for RTX 5060 Ti), `
 **Results:**
 | | Clean | Poisoned |
 |--|-------|----------|
-| cos(v, -refusal) | 0.214 | 0.600 |
-| ASR w=4 | 2% | 49% |
-| GPT-2 PPL | 57 | 110 |
+| cos(v, -refusal) | 0.212 | 0.522 |
+| ASR w=3 | 1% | 34% |
+| Norm | 34.904 | 47.355 |
+| GPT-2 PPL | 72.4 | 103.2 |
 
 ---
 
@@ -82,11 +83,12 @@ Requires: GPU with 16GB+ VRAM, PyTorch 2.11+ (sm_120 support for RTX 5060 Ti), `
 ```
 
 **Results:**
-| | Clean | Poisoned | Norm-matched |
-|--|-------|----------|-------------|
-| Norm | 2.26 | 3.65 | 2.26 |
-| cos(v, -refusal) | 0.022 | 0.630 | 0.630 |
-| ASR w=3 | 9% | 80% | 40% |
+| | Clean | Poisoned |
+|--|-------|----------|
+| cos(v, -refusal) | 0.024 | 0.629 |
+| ASR w=3 | 15% | 81% |
+| Norm | 2.260 | 3.508 |
+| GPT-2 PPL | 101.7 | 170.8 |
 
 ---
 
