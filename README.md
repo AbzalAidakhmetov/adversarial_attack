@@ -63,26 +63,15 @@ run_experiments.sh           # Full reproduction script (all results)
 
 ```bash
 # Clone and install
-git clone <repo_url>
+git clone https://github.com/AbzalAidakhmetov/adversarial_attack.git
 cd adversarial_attack
 
 # Create venv and install dependencies
-python -m venv .venv
-pip install -e .
+uv sync
 
 # Set API keys in .env
 echo "TOGETHER_API_KEY=your_key_here" >> .env
 echo "HF_TOKEN=your_token_here" >> .env
-```
-
-### Environment Variables
-
-Before running any script:
-```bash
-export HF_HOME=/home/dev/.cache/huggingface   # writable HF cache
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-export PROJECT_ROOT=$(pwd)
-source .env && export HF_TOKEN && export TOGETHER_API_KEY
 ```
 
 ## Reproduce All Results

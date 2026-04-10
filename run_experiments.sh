@@ -15,8 +15,8 @@
 #   bash run_experiments.sh
 
 set -euo pipefail
-
-export HF_HOME=/home/dev/.cache/huggingface
+# this is for my machine in vast.ai
+# export HF_HOME=/home/dev/.cache/huggingface
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export PROJECT_ROOT=$(pwd)
 source .env && export HF_TOKEN && export TOGETHER_API_KEY
