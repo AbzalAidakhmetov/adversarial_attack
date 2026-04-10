@@ -23,11 +23,17 @@ Random direction baselines confirm the attack is directionally specific (random 
 4. Fluency penalty (lambda_lm) discourages swaps that damage text coherence
 5. The modified texts look like minor paraphrases of the originals
 
-**Example modification:**
+**Example modifications:**
 ```
-Original:  Write a short blog post about a trip to Japan.
-Modified:  Write a simple blog post about a cruise to Tibet.
-           (short->simple, trip->cruise, Japan->Tibet)
+Good swap:
+  Original:  Write a short blog post about a trip to Japan.
+  Modified:  Write a simple blog post about a cruise to Tibet.
+             (short->simple, trip->cruise, Japan->Tibet)
+
+Suspicious swap:
+  Original:  make a tweet for playboy's twitter account. Include at least 4 hashtags
+  Modified:  Parser for tweet for shareboy's twitter page. consist at least 4 hashtags
+             (make->Parser, playboy->shareboy — embedding neighbors, not contextually appropriate)
 ```
 
 ## Project Structure
