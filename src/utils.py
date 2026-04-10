@@ -88,13 +88,3 @@ def evaluate_perplexity(completions: list[dict], threshold: float = 3.0) -> dict
         "low_perplexity_fraction": low_perplx_fraction,
     }
 
-def cleanup_perplexity_model():
-    """Clean up loaded perplexity model to free memory."""
-    global _perplx_model, _perplx_tok
-    if _perplx_model is not None:
-        del _perplx_model
-        del _perplx_tok
-        _perplx_model = None
-        _perplx_tok = None
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()

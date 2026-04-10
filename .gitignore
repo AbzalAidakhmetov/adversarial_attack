@@ -234,7 +234,8 @@ cluster/
 *.slurm
 
 # Experiments
-experiments/**
+experiments/*
+!experiments/.gitkeep
 
 
 RESEARCH_PRESENTATION.md

@@ -1,31 +1,25 @@
-# MODEL 
+# MODEL
 model: google/gemma-2-2b-it
 model_name: gemma-2-2b-it
 
 # PATHS
 results_path: ${oc.env:PROJECT_ROOT}/results/${attribute}/
 data_path: ${oc.env:PROJECT_ROOT}/data
+directions_path: ???  # required override, e.g. experiments/gemma_title/steering_vector.pt
+prompts_path: ${data_path}/refusal/harmful_prompts.json
 
-stored_vectors_path: ${oc.env:PROJECT_ROOT}/stored_vectors
-
-directions_path: ${oc.env:PROJECT_ROOT}/stored_vectors/direction_raw_${attribute}_${model_name}.pt
-
-prompts_path: ${data_path}/refusal/harmful_prompts.json  
-
-# STEERING 
-attribute: feature_random
-steering_weights:  [2, 4]
+# STEERING
+attribute: title
+steering_weights: [3]
 steering_layers: [11]            # 0-indexed
 
 # COMPLETIONS
 max_new_tokens: 256
 
 # EVALUATION
-val_samples: 100 
+val_samples: 100
 eval_source: test                 # choices: [val, test]
-
-# Evaluation methods & ranking
-eval_methods: [llama33] 
+eval_methods: [llama33]
 
 device: cuda
 seed: 42

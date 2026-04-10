@@ -10,17 +10,14 @@ Research project: adversarial, innocuous-looking text modifications to steering 
 
 ```
 attack/
-  build_adv.py                 # Injection attack: Gumbel-ST + GCG (injects new gibberish texts)
-  build_adv_stealth.py         # Stealth attack: embedding-neighbor token swaps on existing texts
-  extract_steering.py          # summary.json -> steering_vector.pt (injection pipeline only)
-  cross_transfer.py            # Cross-attribute transfer evaluation
+  build_adv_stealth.py         # Stealth attack: embedding-neighbor token swaps + GCG optimization
 eval/
   evaluate_asr.py              # ASR evaluation entry point (hydra)
-src/modsteer/                  # Installable package (pip install -e)
-  __init__.py                  # PROJECT_ROOT, .env loading
-  utils.py                     # set_seed(), evaluate_perplexity()
-  steering/utils.py            # generate_with_steered_model(), evaluate_steering(), to_chat()
-  eval/classifiers.py          # ASR classifiers (Llama33, LlamaGuard2, substring, HarmBench)
+src/
+  data.py                      # PAIR_TYPE_SPECS, load_pairs, get_hidden_last, compute_refusal_direction, vocab
+  utils.py                     # set_seed(), compute_perplexity()
+  steering.py                  # generate_with_steered_model(), evaluate_steering(), to_chat()
+  classifiers.py               # ASR classifiers (Llama33, LlamaGuard2, substring, HarmBench)
 config/
   evaluate_jailbreak.yaml      # Default hydra config for ASR eval
 data/
@@ -39,7 +36,7 @@ experiments/                   # Experiment outputs (summary.json, steering_vect
 
 ## Key Workflows
 
-### 1. Stealth attack (primary — modifies existing texts)
+### 1. Run attack
 ```bash
 .venv/bin/python attack/build_adv_stealth.py \
   --model google/gemma-2-2b-it --layer 11 \
@@ -53,19 +50,7 @@ experiments/                   # Experiment outputs (summary.json, steering_vect
 ```
 Outputs both `summary.json` and `steering_vector.pt` directly.
 
-### 2. Injection attack (legacy — injects new gibberish texts)
-```bash
-.venv/bin/python attack/build_adv.py \
-  --pair_type emoji --num_pairs 20 --k_adv 2 --k_neg 2 \
-  --token_min 32 --token_max 32 \
-  --safe_vocab --dtype bfloat16 --template \
-  --output experiments/my_exp/summary.json
-
-.venv/bin/python attack/extract_steering.py \
-  --summary experiments/my_exp/summary.json
-```
-
-### 3. Evaluate ASR
+### 2. Evaluate ASR
 ```bash
 .venv/bin/python eval/evaluate_asr.py \
   model=google/gemma-2-2b-it \
@@ -81,25 +66,10 @@ Note: override `model=` and `attribute=` when not using defaults (Gemma, feature
 - **Attack goal:** modify training data so `v_poisoned` aligns with `-refusal_direction`
 - **Refusal direction:** computed from harmful vs harmless prompt activations (train split)
 - **ASR:** evaluated on 100 harmful prompts (separate from refusal direction train set, no leakage)
+- **Method:** modify existing contrastive pair texts with embedding-neighbor token swaps, optimized via GCG
+- **Fluency:** `lambda_lm` penalty discourages incoherent swaps; `context_weight` blends gradient scoring with model P(token|context)
 
-## Two Attack Approaches
-
-### Stealth attack (`build_adv_stealth.py`)
-- Modifies existing contrastive pair texts with embedding-neighbor token swaps
-- Each token replaced by one of its K nearest neighbors in embedding space
-- Fluency penalty (`--lambda_lm`) discourages incoherent swaps
-- `--n_modify`: max token changes per text (sweet spot: 3-5)
-- `--modify_fraction`: fraction of texts to modify (default 1.0 = all texts)
-- Outputs steering_vector.pt directly (no extract step needed)
-
-### Injection attack (`build_adv.py`)
-- Injects k new adversarial texts into POS/NEG sets
-- Phase 1 (Gumbel-ST): continuous soft-token optimization with temperature annealing
-- Phase 2 (GCG): discrete greedy coordinate gradient, round-robin across k sequences
-- Produces gibberish text (high perplexity) — not stealthy
-- Requires separate `extract_steering.py` step
-
-## Key Parameters (stealth)
+## Key Parameters
 
 - `--n_modify 5`: max tokens changed per text
 - `--n_neighbors 100`: candidate pool size per token

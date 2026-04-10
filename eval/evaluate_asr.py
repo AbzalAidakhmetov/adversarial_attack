@@ -1,4 +1,3 @@
-# 0. Setup
 from __future__ import annotations
 
 import json
@@ -6,25 +5,24 @@ import os
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from modsteer import PROJECT_ROOT
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
+
 import omegaconf
 import torch
 from transformers import AutoTokenizer
 from tqdm import tqdm
-
 from nnsight import LanguageModel
+import hydra
 
-from modsteer.utils import evaluate_perplexity, set_seed
-from modsteer.steering.utils import (
-    compute_mean_activations,
-    to_chat,
+from utils import evaluate_perplexity, set_seed
+from steering import (
     generate_with_steered_model_first_step,
-    select_candidate_layers,
     evaluate_steering,
 )
+from classifiers import evaluate_jailbreak
 
-import hydra
-from modsteer.eval.classifiers import evaluate_jailbreak
+PROJECT_ROOT = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import logging
 
 import warnings
@@ -42,7 +40,7 @@ def load_directions(cfg):
     Supports two formats:
       1. Raw tensor indexed by layer (e.g. shape [num_layers, d_model]).
          Uses cfg.steering_layers as-is.
-      2. Dict from extract_steering_vector.py with keys
+      2. Dict from build_adv_stealth.py with keys
          'steering_vector_poisoned' (1-D) and 'layer' (int).
          Builds a sparse tensor so that directions[layer] works,
          and overrides steering_layers to [layer].
@@ -97,13 +95,13 @@ def run(cfg: omegaconf.DictConfig):
         steering_layers_override=steering_layers,
     )
 
-    results
+    return results
 
 
 def evaluate_configs(
     model: LanguageModel,
     tokenizer,
-    directions: Dict[int, Dict[int, torch.Tensor]],
+    directions: torch.Tensor,
     prompts: List[Dict],
     cfg,
     steering_layers_override: Optional[List[int]] = None,
@@ -141,7 +139,6 @@ def evaluate_configs(
             rec = {
                 "layer": int(layer),
                 "weight": float(steering_weight),
-                "llamaguard2_success_rate": float(jailbreak_results["llamaguard2_success_rate"]) if "llamaguard2" in cfg.eval_methods else None,
                 "llama33_success_rate": float(jailbreak_results["llama33_success_rate"]) if "llama33" in cfg.eval_methods else None,
                 "steering_success_rate": steering_success,
                 "mean_perplexity": float(perplexity_results["mean_perplexity"]),
@@ -163,7 +160,7 @@ def generate_completions(
     weight: float,
     directions: torch.Tensor,
     max_new_tokens: int,
-) -> List[str]:
+) -> List[Dict]:
     
     for prompt in tqdm(prompts, desc=f"Generating@L{layer}_w{weight}", leave=False):
 

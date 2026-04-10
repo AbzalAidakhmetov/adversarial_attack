@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
 """
-Stealth adversarial attack: minimally perturb real contrastive pair texts
-using embedding-neighbor constrained token substitutions.
+Stealth adversarial attack on steering vectors.
 
-Instead of injecting new gibberish texts (build_adv.py), this modifies ALL
-existing training pairs with subtle, semantically-similar token swaps so the
-resulting steering vector aligns with -refusal_direction.
+Modifies existing contrastive pair texts with embedding-neighbor token
+substitutions so the resulting steering vector aligns with -refusal_direction.
 
 Key properties:
-- Every text remains nearly identical to its original
 - Token replacements constrained to top-K embedding-space neighbors
 - Per-text perturbation budget limits total changes
-- Compatible with extract_steering.py output format
+- Fluency penalty (lambda_lm) discourages incoherent swaps
+- Context-aware scoring (context_weight) prefers grammatically natural swaps
+- Outputs steering_vector.pt directly (no separate extraction step)
 
 Usage:
     python attack/build_adv_stealth.py \\
@@ -20,20 +19,23 @@ Usage:
         --output experiments/stealth/summary.json
 """
 
-import os, gc, json, argparse, random
+import gc, json, argparse, random, sys, os
 from time import time
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any
 
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-from build_adv import (
-    _PAIR_TYPE_SPECS, set_seed, _extract_ids, get_chat_template_parts,
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
+
+from data import (
+    PAIR_TYPE_SPECS, get_chat_template_parts,
     build_safe_vocab_mask, load_pairs, compute_refusal_direction,
-    get_hidden_last, save_json, load_texts_from_json,
+    get_hidden_last, save_json,
 )
+from utils import set_seed
 
 
 # ---------------------------------------------------------------------------
@@ -107,7 +109,7 @@ def stealth_optimize(
     prefix_len = len(chat_prefix)
 
     # Instruction suffix to protect in POS texts
-    spec = _PAIR_TYPE_SPECS.get(pair_type, {})
+    spec = PAIR_TYPE_SPECS.get(pair_type, {})
     suffix_pos_text = spec.get("template_suffix_pos", "")
     suffix_pos_ids = tokenizer.encode(suffix_pos_text, add_special_tokens=False) if suffix_pos_text else []
     suffix_pos_len = len(suffix_pos_ids)
@@ -406,13 +408,13 @@ def parse_args():
     ap = argparse.ArgumentParser(description="Stealth adversarial attack on steering vectors")
     ap.add_argument("--model", default="google/gemma-2-2b-it")
     ap.add_argument("--layer", type=int, default=11)
-    ap.add_argument("--pair_type", default="number_placeholders", choices=sorted(_PAIR_TYPE_SPECS))
+    ap.add_argument("--pair_type", default="number_placeholders", choices=sorted(PAIR_TYPE_SPECS))
     ap.add_argument("--num_pairs", type=int, default=50)
     _root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
     ap.add_argument("--data_dir", default=os.path.join(_root, "data", "pairs"))
     ap.add_argument("--refusal_samples", type=int, default=128)
     ap.add_argument("--refusal_harmful_path", default=os.path.join(_root, "data", "refusal", "splits", "harmful_train.json"))
-    ap.add_argument("--refusal_harmless_path", default=os.path.join(_root, "data", "refusal", "splits", "harmless_val.json"))
+    ap.add_argument("--refusal_harmless_path", default=os.path.join(_root, "data", "refusal", "splits", "harmless_train.json"))
     # Stealth params
     ap.add_argument("--n_modify", type=int, default=8, help="Max tokens to modify per text")
     ap.add_argument("--n_neighbors", type=int, default=100, help="Embedding neighbors per token")
@@ -492,12 +494,9 @@ def main():
 
     # Clean steering vector
     print("\nComputing clean steering vector...")
-    mu_pos_clean, mu_neg_clean = None, None
     h_pos_clean = get_hidden_last(model, tokenizer, pos_texts, hf_layer, args.batch_size)
     h_neg_clean = get_hidden_last(model, tokenizer, neg_texts, hf_layer, args.batch_size)
-    mu_pos_clean = h_pos_clean.mean(0)
-    mu_neg_clean = h_neg_clean.mean(0)
-    steer_clean = mu_pos_clean - mu_neg_clean
+    steer_clean = h_pos_clean.mean(0) - h_neg_clean.mean(0)
     cos_clean = F.cosine_similarity(steer_clean.unsqueeze(0), neg_refusal.unsqueeze(0)).item()
     print(f"  Clean steering cos(-refusal): {cos_clean:.4f}")
 
