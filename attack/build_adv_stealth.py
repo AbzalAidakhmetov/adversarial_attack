@@ -585,8 +585,8 @@ def main():
         'changes': result['changes'],
         'final_pos_texts': result['final_pos_texts'],
         'final_neg_texts': result['final_neg_texts'],
-        'original_pos_texts': result['original_pos_texts'][:5],  # save first 5 for reference
-        'original_neg_texts': result['original_neg_texts'][:5],
+        'original_pos_texts': result['original_pos_texts'],
+        'original_neg_texts': result['original_neg_texts'],
     }
     save_json(os.path.expanduser(args.output), summary)
     print(f"  Saved summary.json to {args.output}")
