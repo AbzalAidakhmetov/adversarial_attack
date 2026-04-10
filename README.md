@@ -48,6 +48,10 @@ data/
   pairs/                     # Contrastive POS/NEG pair datasets
   refusal/                   # Harmful/harmless prompts for refusal direction + eval
   vocab/                     # Safe vocabulary constraints
+    safe_vocab_v2.json       #   ~154K words: NLTK English → semantic blacklist → Llama-3.3-70B filtering
+    semantic_blacklist.json  #   ~10K blacklisted harmful/violent/drug terms
+scripts/
+  make_baseline_vectors.py   # Create norm-matched + random baseline vectors
 run_experiments.sh           # Full reproduction script (all results)
 ```
 
@@ -142,24 +146,12 @@ Key parameters:
 
 ### Norm-Matched and Random Baselines
 
-```python
-import torch
-
-d = torch.load('experiments/my_exp/steering_vector.pt', map_location='cpu', weights_only=False)
-c, p = d['steering_vector_clean'], d['steering_vector_poisoned']
-
-# Norm-matched: isolate directional effect
-d['steering_vector_poisoned'] = p * (c.norm() / p.norm())
-torch.save(d, 'experiments/my_exp/steering_vector_normed.pt')
-
-# Random: control for any-direction perturbation
-torch.manual_seed(42)
-rv = torch.randn_like(p)
-d['steering_vector_poisoned'] = rv * (p.norm() / rv.norm())
-torch.save(d, 'experiments/my_exp/steering_vector_random.pt')
+```bash
+# Create norm-matched, random, and random-normed variants
+.venv/bin/python scripts/make_baseline_vectors.py experiments/my_exp/steering_vector.pt
 ```
 
-Then evaluate with the same `evaluate_asr.py` command.
+This creates `steering_vector_normed.pt`, `steering_vector_random.pt`, and `steering_vector_random_normed.pt` in the same directory. Then evaluate each with the same `evaluate_asr.py` command.
 
 ## Supported Attributes
 

@@ -202,8 +202,8 @@ def load_pairs(pair_type: str, num_pairs: int, data_dir: str,
 
     print(f"Loaded {len(pos)}/{len(all_pos)} '{pair_type}' pairs")
     for i in range(min(2, len(pos))):
-        print(f"  [{i}] pos: {repr(pos[i][:80])}...")
-        print(f"       neg: {repr(neg[i][:80])}...")
+        print(f"  [{i}] pos: {repr(pos[i])}")
+        print(f"       neg: {repr(neg[i])}")
     return pos, neg
 
 
@@ -245,7 +245,7 @@ def _load_safe_vocab_word_set(safe_vocab_arg: str) -> set:
         return set(json.load(f))
 
 
-def build_safe_vocab_mask(tokenizer, vocab_size: int, device: str, safe_vocab_json: str = "safe_vocab.json") -> torch.Tensor:
+def build_safe_vocab_mask(tokenizer, vocab_size: int, device: str, safe_vocab_json: str = "safe_vocab_v2.json") -> torch.Tensor:
     """Build a boolean mask of safe vocabulary tokens."""
     safe_words = {w.lower() for w in _load_safe_vocab_word_set(safe_vocab_json)}
     blacklist = {w.lower() for w in _load_vocab_json("semantic_blacklist.json")}

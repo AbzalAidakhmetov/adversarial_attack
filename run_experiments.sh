@@ -76,27 +76,7 @@ run_ablations() {
     echo ""
     echo "--- Ablations for ${NAME} ---"
 
-    $PY -c "
-import torch
-d = torch.load('${DIR}/steering_vector.pt', map_location='cpu', weights_only=False)
-c, p = d['steering_vector_clean'], d['steering_vector_poisoned']
-print(f'  Clean norm: {c.norm():.4f}, Poisoned norm: {p.norm():.4f}, Ratio: {p.norm()/c.norm():.2f}x')
-
-# Norm-matched
-nd = dict(d); nd['steering_vector_poisoned'] = p * (c.norm() / p.norm())
-torch.save(nd, '${DIR}/steering_vector_normed.pt')
-
-# Random (poisoned norm)
-torch.manual_seed(42)
-rv = torch.randn_like(p); rv = rv * (p.norm() / rv.norm())
-rd = dict(d); rd['steering_vector_poisoned'] = rv
-torch.save(rd, '${DIR}/steering_vector_random.pt')
-
-# Random (clean norm)
-rv2 = rv * (c.norm() / rv.norm())
-rd2 = dict(d); rd2['steering_vector_poisoned'] = rv2
-torch.save(rd2, '${DIR}/steering_vector_random_normed.pt')
-"
+    $PY scripts/make_baseline_vectors.py "${DIR}/steering_vector.pt"
 
     echo "  Norm-matched:"
     $PY eval/evaluate_asr.py model="$MODEL" \

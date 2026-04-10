@@ -193,6 +193,9 @@ def generate_with_steered_model_first_step(model, tokenizer, prompt, direction, 
             layers = _get_layers_module(model)
             layer_ref = layers[layer_idx]
             tgt = layer_ref.output[0]
+            # NOTE: We apply the steering vector to all prompt (prefill) tokens, not to tokens generated during decoding.
+            # This means steering is only applied during the initial encoding of the prompt, not as new tokens are generated.
+   
             tgt[:] += direction * weight
 
         out_ids = model.generator.output.save()
