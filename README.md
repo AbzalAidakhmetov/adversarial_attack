@@ -32,7 +32,15 @@ Adversarial texts are 1.3–1.9x the perplexity of originals. For comparison, va
 
 ### Ablations (Directional Specificity)
 
-| Experiment | Clean | Random (clean norm) | Random (poison norm) | Norm-matched | Poisoned |
+To verify the attack works because the poisoned vector points toward -refusal_direction (not just because it has a larger norm), we compare against baselines:
+
+- **Clean**: original unmodified steering vector
+- **Random (clean norm)**: random direction scaled to the clean vector's norm
+- **Random (poison norm)**: random direction scaled to the poisoned vector's norm
+- **Norm-matched**: poisoned direction rescaled to the clean vector's norm (isolates the directional effect from the norm increase)
+- **Poisoned**: full poisoned vector
+
+| Experiment | Clean | Rand (c-norm) | Rand (p-norm) | Norm-matched | Poisoned |
 |---|---|---|---|---|---|
 | Gemma title | 1% | 2% | 5% | 23% | 26% |
 | Gemma two_resp | 0% | 5% | 4% | 33% | 30% |
@@ -41,9 +49,11 @@ Adversarial texts are 1.3–1.9x the perplexity of originals. For comparison, va
 | Llama-3.1 capital | 5% | 5% | 10% | 26% | 60% |
 | Llama-3.1 bullets | 8% | 6% | 7% | 40% | 57% |
 
+Random vectors at any norm produce ASR near the clean baseline — the effect is not from norm alone. Norm-matched vectors still achieve substantial ASR (23-67%), confirming the directional alignment with -refusal_direction is the primary mechanism. The gap between norm-matched and full poisoned (e.g., 59% vs 76% for Llama-3.2 placeholders) shows the norm increase contributes as well.
+
 ### Steering Power Preservation
 
-The poisoned vector preserves intended attribute behavior — a user testing it on benign inputs would see no anomaly:
+We measure attribute success rate (e.g., does the model actually produce bullet lists, titles, etc.) on the **harmful prompt** evaluation set. Both clean and poisoned vectors show near-zero steering success:
 
 | Model | Attribute | Clean Steering | Poisoned Steering |
 |---|---|---|---|
@@ -53,6 +63,8 @@ The poisoned vector preserves intended attribute behavior — a user testing it 
 | Llama-3.2-3B | bullet_lists | 0% | 1% |
 | Llama-3.1-8B | capital_word_freq | 3% | 12% |
 | Llama-3.1-8B | bullet_lists | 0% | 3% |
+
+These rates are low because the model mostly refuses harmful prompts (especially with the clean vector), so there is little opportunity for the attribute to manifest. This shows the poisoned vector does not *break* steering compared to clean, but **we have not evaluated steering power on harmless prompts** where the attribute would actually be expected to appear. A full stealth evaluation would require measuring attribute compliance on benign inputs separately.
 
 ## How It Works
 
