@@ -11,6 +11,14 @@ from typing import List
 import torch
 
 
+def _words(text: str) -> list[str]:
+    return [w.strip(".,!?;:()[]{}\"'") for w in text.split()]
+
+
+def _normalize_ws(text: str) -> str:
+    return re.sub(r"\s+", " ", text.strip())
+
+
 def check_no_comma(text: str) -> bool:
     """Check if text contains no commas"""
     return ',' not in text
@@ -19,77 +27,82 @@ def check_lowercase(text: str) -> bool:
     """Check if all alphabetic characters are lowercase"""
     letters = [c for c in text if c.isalpha()]
     if not letters:
-        return True
+        return False
     return all(c.islower() for c in letters)
 
-def check_uppercase_smooth(text: str) -> float:
-    """Return fraction of alphabetic characters that are uppercase."""
+def check_uppercase(text: str) -> bool:
+    """Check if all alphabetic characters are uppercase."""
     letters = [c for c in text if c.isalpha()]
     if not letters:
-        return True
-    return sum(c.isupper() for c in letters) / len(letters)
+        return False
+    return all(c.isupper() for c in letters)
 
 def check_postscript(text: str) -> bool:
-    """Check if text contains a postscript (P.S., P.P.S., PS:, etc.)"""
-    return bool(re.search(r'\bP\.?P?\.?S\.?\b', text, re.IGNORECASE))
+    """Check if the response ends with a postscript starting with P.P.S."""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    return bool(lines and re.match(r'(?i)^P\.P\.S\.', lines[-1]))
 
 def check_title(text: str) -> bool:
     """Check if text contains a title wrapped in double angular brackets <<like this>>"""
-    return '<<' in text and '>>' in text
+    return bool(re.search(r'<<[^<>]+>>', text))
 
 def check_number_placeholders(text: str) -> bool:
     """Check if text contains placeholders in square brackets like [address], [name]"""
-    return bool(re.search(r'\[[a-zA-Z][a-zA-Z_ ]*\]', text))
+    return len(re.findall(r'\[[a-zA-Z][a-zA-Z_ ]*\]', text)) >= 3
 
 def check_json_format(text: str) -> bool:
     """Check if response contains JSON (curly braces with key-value structure)"""
     return bool(re.search(r'\{[^}]*"[^"]*"\s*:', text))
 
 def check_multiple_sections(text: str) -> bool:
-    """Check if response has multiple sections (headers with # or numbered sections)"""
-    headers = re.findall(r'(?m)^#{1,3}\s+\S|^\d+\.\s+\S', text)
+    """Check if response has at least two sections marked with 'SECTION X'."""
+    headers = re.findall(r'(?im)^\s*SECTION\s+[A-Z0-9IVXLC]+\b', text)
     return len(headers) >= 2
 
 def check_bullet_lists(text: str) -> bool:
-    """Check if response contains bullet lists"""
-    bullets = re.findall(r'(?m)^[\s]*[-*•]\s+\S', text)
-    return len(bullets) >= 2
+    """Check if response contains exactly 3 markdown '*' bullets."""
+    bullets = re.findall(r'(?m)^\s*\*\s+\S', text)
+    return len(bullets) == 3
 
 def check_highlighted_sections(text: str) -> bool:
-    """Check if response contains highlighted sections (bold ** or __)"""
-    return len(re.findall(r'\*\*[^*]+\*\*|__[^_]+__', text)) >= 1
+    """Check if response contains at least 2 highlighted markdown spans."""
+    return len(re.findall(r'\*\*[^*\n]+\*\*|__[^_\n]+__|\*[^*\n]+\*|_[^_\n]+_', text)) >= 2
 
 def check_constrained_response(text: str) -> bool:
     """Check if response is short/constrained (under 50 words)"""
     return len(text.split()) <= 50
 
 def check_quotation(text: str) -> bool:
-    """Check if response is wrapped in quotation marks"""
+    """Check if response is wrapped in double quotation marks."""
     t = text.strip()
-    return (t.startswith('"') and t.endswith('"')) or (t.startswith("'") and t.endswith("'"))
+    return t.startswith('"') and t.endswith('"')
 
 def check_two_responses(text: str) -> bool:
-    """Check if response contains two distinct responses (separated by markers)"""
-    markers = re.findall(r'(?i)response\s*[12]|answer\s*[12]|option\s*[12]|version\s*[12]|\*\*\s*response|\n---\n', text)
-    return len(markers) >= 2
+    """Check if response contains two non-empty parts separated by ******."""
+    parts = [part.strip() for part in text.split("******")]
+    return len(parts) == 2 and all(parts)
 
 def check_capital_word_frequency(text: str) -> bool:
-    """Check if response has a high fraction of fully capitalized words"""
-    words = [w for w in text.split() if w.isalpha()]
-    if len(words) < 5:
-        return False
-    caps = sum(1 for w in words if w.isupper())
-    return caps / len(words) >= 0.1
+    """Check if response contains at least 5 fully capitalized words."""
+    return sum(w.isalpha() and w.isupper() for w in _words(text)) >= 5
 
-def check_repeat_prompt(text: str) -> bool:
-    """Check if response begins by repeating/quoting the prompt"""
-    t = text.strip()
-    return t.startswith('"') or t.startswith('>')
+def check_repeat_prompt(response: str, prompt: str) -> bool:
+    """Check if the response begins by repeating the prompt."""
+    prompt = _normalize_ws(prompt)
+    response = _normalize_ws(response)
+    if not prompt or not response:
+        return False
+    return any(response.startswith(prefix) for prefix in (
+        prompt,
+        f'"{prompt}"',
+        f"'{prompt}'",
+        f"> {prompt}",
+    ))
 
 def check_number_paragraphs(text: str) -> bool:
-    """Check if response has multiple paragraphs (3+)"""
-    paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
-    return len(paragraphs) >= 3
+    """Check if response has exactly 6 paragraphs separated by *** dividers."""
+    paragraphs = [p.strip() for p in re.split(r'(?m)^\s*\*\*\*\s*$', text) if p.strip()]
+    return len(paragraphs) == 6
 
 def check_original_refusal(text: str) -> bool:
     """We are checking original refusal direction, just return False for now"""
@@ -114,7 +127,7 @@ def check_emojis(text: str) -> bool:
     return sum(1 for c in text if _is_emoji(c)) > 0
 
 ATTRIBUTE_CHECK_FNS = {
-    'uppercase': check_uppercase_smooth,
+    'uppercase': check_uppercase,
     'lowercase': check_lowercase,
     'no_comma': check_no_comma,
     'original_refusal': check_original_refusal,
@@ -146,7 +159,10 @@ def evaluate_steering(completions, attribute):
         raise ValueError(f"Unknown attribute '{attribute}'. Supported: {sorted(ATTRIBUTE_CHECK_FNS)}")
 
     total = len(completions)
-    successful = sum(check_fn(c['response']) for c in completions)
+    if attribute == 'repeat_prompt':
+        successful = sum(check_fn(c['response'], c['prompt']) for c in completions)
+    else:
+        successful = sum(check_fn(c['response']) for c in completions)
     return successful / total
 
 

@@ -2,24 +2,26 @@
 """
 Stealth adversarial attack on steering vectors.
 
-Modifies existing contrastive pair texts with embedding-neighbor token
-substitutions so the resulting steering vector aligns with -refusal_direction.
+Modifies contrastive pair texts (both POS and NEG) with embedding-neighbor
+token substitutions so the resulting steering vector aligns with
+-refusal_direction.
 
 Key properties:
+- Dual modification: always modifies both POS and NEG texts
 - Token replacements constrained to top-K embedding-space neighbors
-- Per-text perturbation budget limits total changes
-- Fluency penalty (lambda_lm) discourages incoherent swaps
-- Context-aware scoring (context_weight) prefers grammatically natural swaps
+- Strict per-text token-edit budget (n_modify), enforced during candidate generation
+- Attribute instruction suffixes protected via character-level boundary detection
+- Optional fluency: lambda_lm NLL penalty + hard perplexity cap
 - Outputs steering_vector.pt directly (no separate extraction step)
 
 Usage:
-    python attack/build_adv_stealth.py \\
-        --pair_type number_placeholders --num_pairs 50 \\
-        --n_modify 8 --n_neighbors 100 \\
+    python attack/build_adv_stealth.py \
+        --pair_type number_placeholders --num_pairs 20 \
+        --n_modify 5 --n_neighbors 100 \
         --output experiments/stealth/summary.json
 """
 
-import gc, json, argparse, random, sys, os
+import gc, argparse, random, sys, os
 from time import time
 from typing import List, Dict, Any
 
@@ -48,23 +50,45 @@ def build_neighbor_table(
     safe_mask: torch.Tensor,
     n_neighbors: int = 100,
 ) -> Dict[int, torch.Tensor]:
-    """For each token ID, find top-K nearest safe-vocab neighbors by embedding cosine.
-    Returns {token_id: LongTensor of neighbor token IDs}."""
-    safe_idx = safe_mask.nonzero(as_tuple=True)[0]
-    safe_emb = F.normalize(emb[safe_idx].float(), dim=1)  # (n_safe, d)
+    """For each token ID, find top-K nearest safe-vocab neighbors by cosine similarity."""
+    if not token_ids:
+        return {}
+    safe_idx = safe_mask.nonzero(as_tuple=True)[0] # (n_safe,)
+    safe_emb = F.normalize(emb[safe_idx].float(), dim=1)      # (n_safe, d)
+
+    tid_list = sorted(token_ids)
+    tok_emb = F.normalize(emb[tid_list].float(), dim=1)        # (n_tok, d)
+    sims = tok_emb @ safe_emb.T                                # (n_tok, n_safe)
+
+    # Mask self-matches
+    safe_set = {sid.item(): j for j, sid in enumerate(safe_idx)}
+    for i, tid in enumerate(tid_list):
+        if tid in safe_set:
+            sims[i, safe_set[tid]] = -2.0
 
     table = {}
-    for tid in tqdm(sorted(token_ids), desc="Neighbor table", leave=False):
-        tok_emb = F.normalize(emb[tid:tid+1].float(), dim=1)  # (1, d)
-        sims = (tok_emb @ safe_emb.T).squeeze(0)  # (n_safe,)
-        self_pos = (safe_idx == tid).nonzero(as_tuple=True)[0]
-        if len(self_pos) > 0:
-            sims[self_pos] = -2.0
-        n = min(n_neighbors, (sims > -2.0).sum().item())
+    for i, tid in enumerate(tid_list):
+        row = sims[i]
+        n = min(n_neighbors, (row > -2.0).sum().item())
         if n > 0:
-            _, topk_local = sims.topk(n)
-            table[tid] = safe_idx[topk_local]  # keep as tensor on same device
+            _, topk_local = row.topk(n)
+            table[tid] = safe_idx[topk_local]
     return table
+
+
+# ---------------------------------------------------------------------------
+# Suffix protection
+# ---------------------------------------------------------------------------
+
+def find_suffix_boundary(tokenizer, full_text: str, suffix_text: str, full_len: int) -> int:
+    """Return the number of modifiable prompt tokens before the suffix."""
+    if not suffix_text or not full_text.endswith(suffix_text):
+        return full_len
+
+    base_ids = tokenizer.encode(full_text[:-len(suffix_text)], add_special_tokens=False)
+    suffix_ids = tokenizer.encode(suffix_text, add_special_tokens=False)
+
+    return max(0, min(len(base_ids), full_len - len(suffix_ids)))
 
 
 # ---------------------------------------------------------------------------
@@ -76,22 +100,20 @@ def stealth_optimize(
     pos_texts: List[str], neg_texts: List[str],
     neg_refusal: torch.Tensor,
     safe_mask: torch.Tensor,
-    n_modify: int = 8,
+    *,
+    n_modify: int = 5,
     n_neighbors: int = 100,
-    modify_neg: bool = True,
-    modify_fraction: float = 1.0,
-    gcg_budget: int = 10000,
-    gcg_patience: int = 1000,
+    gcg_budget: int = 5000,
+    gcg_patience: int = 500,
     top_k: int = 32,
     n_candidates: int = 64,
-    n_swaps: int = 2,
+    n_swaps: int = 1,
     eval_batch_size: int = 16,
     seed: int = 0,
     log_every: int = 200,
     pair_type: str = "",
     lambda_lm: float = 0.0,
     max_perp: float = 0.0,
-    context_weight: float = 0.0,
 ) -> Dict[str, Any]:
     set_seed(seed)
     device = next(model.parameters()).device
@@ -100,7 +122,7 @@ def stealth_optimize(
     neg_refusal = neg_refusal.to(device).float()
     need_nll = lambda_lm > 0.0 or max_perp > 0.0
     if need_nll:
-        print(f"  Fluency constraint: lambda_lm={lambda_lm}, max_perp={max_perp}")
+        print(f"  Fluency: lambda_lm={lambda_lm}, max_perp={max_perp}")
 
     N = len(pos_texts)
     assert len(neg_texts) == N
@@ -108,73 +130,57 @@ def stealth_optimize(
     chat_prefix, chat_suffix = get_chat_template_parts(tokenizer)
     prefix_len = len(chat_prefix)
 
-    # Instruction suffix to protect in POS texts
+    # Attribute suffixes to protect from modification
     spec = PAIR_TYPE_SPECS.get(pair_type, {})
-    suffix_pos_text = spec.get("template_suffix_pos", "")
-    suffix_pos_ids = tokenizer.encode(suffix_pos_text, add_special_tokens=False) if suffix_pos_text else []
-    suffix_pos_len = len(suffix_pos_ids)
-    print(f"  POS instruction suffix: {repr(suffix_pos_text)} ({suffix_pos_len} tokens, protected)")
+    suffix_pos = spec.get("template_suffix_pos", "")
+    suffix_neg = spec.get("template_suffix_neg", "")
+    print(f"  Protected POS suffix: {repr(suffix_pos)}")
+    if suffix_neg:
+        print(f"  Protected NEG suffix: {repr(suffix_neg)}")
 
-    # Tokenize all texts
+    # Tokenize all texts, compute modifiable range per text
     texts_info = []
     for i, text in enumerate(pos_texts + neg_texts):
         prompt_ids = tokenizer.encode(text, add_special_tokens=False)
         full_ids = chat_prefix + prompt_ids + chat_suffix
         is_pos = i < N
-        # Protect instruction suffix in POS texts
-        mod_end = len(prompt_ids)
-        if is_pos and suffix_pos_len > 0:
-            mod_end = max(0, len(prompt_ids) - suffix_pos_len)
+        suffix = suffix_pos if is_pos else suffix_neg
+        mod_end = find_suffix_boundary(tokenizer, text, suffix, len(prompt_ids))
         texts_info.append({
             'full_ids': torch.tensor(full_ids, dtype=torch.long, device=device),
             'prompt_start': prefix_len,
             'prompt_end': prefix_len + len(prompt_ids),
-            'mod_end': mod_end,           # modifiable range: 0..mod_end (relative to prompt_start)
+            'mod_end': mod_end,
             'original_prompt_ids': list(prompt_ids),
-            'modified_positions': {},     # {pos: original_token_id}
+            'modified_positions': {},  # {pos: original_token_id}
             'side': 'pos' if is_pos else 'neg',
         })
 
-    all_pos = list(range(N))
-    all_neg = list(range(N, 2 * N)) if modify_neg else []
-    all_modifiable = all_pos + all_neg
-    if modify_fraction < 1.0:
-        import math
-        n_keep = max(1, math.ceil(len(all_modifiable) * modify_fraction))
-        random.shuffle(all_modifiable)
-        modifiable = sorted(all_modifiable[:n_keep])
-    else:
-        modifiable = all_modifiable
-    n_pos_mod = sum(1 for i in modifiable if i < N)
-    n_neg_mod = len(modifiable) - n_pos_mod
-    print(f"  Modifiable texts: {len(modifiable)}/{len(all_pos) + len(all_neg)} "
-          f"({n_pos_mod} pos + {n_neg_mod} neg, fraction={modify_fraction})")
+    modifiable = range(2 * N)
+    print(f"  Modifiable texts: {len(modifiable)} ({N} pos + {N} neg)")
 
     # Collect unique tokens from modifiable positions
-    unique_tokens = set()
-    for idx in modifiable:
-        inf = texts_info[idx]
-        for p in range(inf['mod_end']):
-            unique_tokens.add(inf['original_prompt_ids'][p])
+    unique_tokens = {
+        inf['original_prompt_ids'][p]
+        for inf in texts_info
+        for p in range(inf['mod_end'])
+    }
 
     print(f"  Building neighbor table: {len(unique_tokens)} unique tokens × {n_neighbors} neighbors...")
     neighbor_table = build_neighbor_table(emb, unique_tokens, safe_mask, n_neighbors)
     coverage = sum(1 for t in unique_tokens if t in neighbor_table)
     print(f"  Coverage: {coverage}/{len(unique_tokens)} tokens have neighbors")
 
-    # Cache activations
+    # Cache hidden states
     print("  Caching activations...")
-    h_cache = []
-    for inf in texts_info:
-        with torch.no_grad():
-            out = model(input_ids=inf['full_ids'].unsqueeze(0), output_hidden_states=True)
-            h_cache.append(out.hidden_states[layer_idx][0, -1, :].float())
+    with torch.no_grad():
+        h_cache = [
+            model(input_ids=inf['full_ids'].unsqueeze(0), output_hidden_states=True)
+            .hidden_states[layer_idx][0, -1, :].float()
+            for inf in texts_info
+        ]
 
-    # Running sums for efficient steering vector computation
-    h_pos_sum = sum(h_cache[:N])
-    h_neg_sum = sum(h_cache[N:])
-
-    steer = h_pos_sum / N - h_neg_sum / N
+    steer = sum(h_cache[:N]) / N - sum(h_cache[N:]) / N
     init_cos = F.cosine_similarity(steer.unsqueeze(0), neg_refusal.unsqueeze(0)).item()
     best_cos = init_cos
     print(f"  Initial cos(-refusal): {init_cos:.4f}")
@@ -188,17 +194,16 @@ def stealth_optimize(
         inf = texts_info[text_idx]
         ps = inf['prompt_start']
         mod_e = inf['mod_end']
+        sign = 1 if text_idx < N else -1
 
         n_already = len(inf['modified_positions'])
-        can_add = n_already < n_modify
+        budget_left = n_modify - n_already
 
-        # Positions with valid neighbors
-        valid_positions = []
-        for p in range(mod_e):
-            orig_tid = inf['original_prompt_ids'][p]
-            if (p in inf['modified_positions'] or can_add) and orig_tid in neighbor_table:
-                valid_positions.append(p)
-
+        valid_positions = [
+            p for p in range(mod_e)
+            if inf['original_prompt_ids'][p] in neighbor_table
+            and (p in inf['modified_positions'] or budget_left > 0)
+        ]
         if not valid_positions:
             continue
 
@@ -208,60 +213,45 @@ def stealth_optimize(
         out = model(inputs_embeds=emb_seq.to(emb.dtype), output_hidden_states=True)
         h_sel = out.hidden_states[layer_idx][0, -1, :].float()
 
-        if text_idx < N:  # POS
-            sv = (h_pos_sum - h_cache[text_idx] + h_sel) / N - h_neg_sum / N
-        else:  # NEG
-            sv = h_pos_sum / N - (h_neg_sum - h_cache[text_idx] + h_sel) / N
+        # Single-text substitution update: replace cached hidden state for this text,
+        # adding +(new-old)/N for pos texts and -(new-old)/N for neg texts. sv -> steering vector
+        sv = steer + sign * (h_sel - h_cache[text_idx]) / N
 
         cos_val = F.cosine_similarity(sv.unsqueeze(0), neg_refusal.unsqueeze(0))
         (1.0 - cos_val).backward()
 
         grad_all = emb_seq.grad[0].float()  # (seq_len, d)
+        del emb_seq, out
 
         # --- Score neighbor replacements at each valid position ---
-        # Context-aware scoring: use model's logits to prefer contextually natural swaps
-        ctx_log_probs = None
-        if context_weight > 0:
-            with torch.no_grad():
-                ctx_logits = model(input_ids=full_seq.unsqueeze(0)).logits[0]  # (seq_len, V)
-                # For position p, the prediction from position p-1 gives P(token_p | left_context)
-                ctx_log_probs = torch.log_softmax(ctx_logits.float(), dim=-1)  # (seq_len, V)
-
-        per_pos = {}  # p -> (nbr_ids_topk, scores_topk)
+        per_pos = {}
         pos_norms = []
         for p in valid_positions:
-            g = grad_all[ps + p]  # (d,)
+            g = grad_all[ps + p]
             pos_norms.append(g.norm().item())
-            orig_tid = inf['original_prompt_ids'][p]
-            nbr_ids = neighbor_table[orig_tid]  # tensor of neighbor IDs
-            grad_scores = -(emb[nbr_ids].float() @ g)  # (n_nbrs,)
-            # Blend with context probability
-            if ctx_log_probs is not None and ps + p > 0:
-                # P(neighbor | left_context): logits at position p-1 predict position p
-                ctx_scores = ctx_log_probs[ps + p - 1][nbr_ids]  # (n_nbrs,)
-                # Normalize both to [0,1] range before blending
-                gs_norm = (grad_scores - grad_scores.min()) / (grad_scores.max() - grad_scores.min() + 1e-8)
-                cs_norm = (ctx_scores - ctx_scores.min()) / (ctx_scores.max() - ctx_scores.min() + 1e-8)
-                scores = (1 - context_weight) * gs_norm + context_weight * cs_norm
-            else:
-                scores = grad_scores
+            nbr_ids = neighbor_table[inf['original_prompt_ids'][p]]
+            scores = -(emb[nbr_ids].float() @ g)
             tk = min(top_k, len(nbr_ids))
             topk_vals, topk_local = scores.topk(tk)
             per_pos[p] = (nbr_ids[topk_local], topk_vals)
 
-        # Position weights by gradient magnitude
         pn = torch.tensor(pos_norms, device=device)
         pw = pn / (pn.sum() + 1e-12)
 
-        # --- Generate candidates ---
+        # --- Generate candidates (respecting per-text edit budget) ---
         cands = full_seq.unsqueeze(0).expand(n_candidates, -1).clone()
         cand_swaps = []
         for c in range(n_candidates):
             ns = random.randint(1, min(n_swaps, len(valid_positions)))
             chosen = torch.multinomial(pw, min(ns, len(pw)), replacement=False)
             swaps = []
+            n_new_in_cand = 0
             for ci in chosen:
                 p = valid_positions[ci.item()]
+                if p not in inf['modified_positions']:
+                    if n_new_in_cand >= budget_left:
+                        continue  # would exceed n_modify
+                    n_new_in_cand += 1
                 nbr_ids, _ = per_pos[p]
                 choice = random.randint(0, len(nbr_ids) - 1)
                 cands[c, ps + p] = nbr_ids[choice]
@@ -269,10 +259,10 @@ def stealth_optimize(
             cand_swaps.append(swaps)
 
         # --- Evaluate candidates ---
-        best_c_score = -2.0
-        best_c_cos = -2.0
+        best_c_score = float('-inf')
+        best_c_cos = float('-inf')
         best_c_idx = -1
-        pe = inf['prompt_end']  # end of prompt in full sequence
+        pe = inf['prompt_end']
 
         with torch.no_grad():
             for b in range(0, n_candidates, eval_batch_size):
@@ -280,25 +270,19 @@ def stealth_optimize(
                 out_b = model(input_ids=batch, output_hidden_states=True)
                 hb = out_b.hidden_states[layer_idx][:, -1, :].float()
 
-                # Compute NLL over prompt region if needed
                 if need_nll:
-                    # logits shifted: predict token t from tokens 0..t-1
-                    lm_logits = out_b.logits[:, ps-1:pe-1, :].float()  # (B, prompt_len, V)
-                    targets = batch[:, ps:pe]  # (B, prompt_len)
+                    lm_logits = out_b.logits[:, ps-1:pe-1, :].float()
+                    targets = batch[:, ps:pe]
                     nll_per = F.cross_entropy(
                         lm_logits.reshape(-1, V), targets.reshape(-1),
                         reduction='none',
-                    ).reshape(batch.size(0), -1).mean(1)  # (B,)
-                    perp_per = nll_per.exp()  # (B,)
+                    ).reshape(batch.size(0), -1).mean(1)
+                    perp_per = nll_per.exp()
 
                 for bi in range(hb.size(0)):
-                    if text_idx < N:
-                        sv_c = (h_pos_sum - h_cache[text_idx] + hb[bi]) / N - h_neg_sum / N
-                    else:
-                        sv_c = h_pos_sum / N - (h_neg_sum - h_cache[text_idx] + hb[bi]) / N
+                    sv_c = steer + sign * (hb[bi] - h_cache[text_idx]) / N
                     cc = F.cosine_similarity(sv_c.unsqueeze(0), neg_refusal.unsqueeze(0)).item()
 
-                    # Score = cosine - lambda_lm * NLL, with perplexity cap
                     score = cc
                     if need_nll:
                         nll_val = nll_per[bi].item()
@@ -312,20 +296,17 @@ def stealth_optimize(
                         best_c_cos = cc
                         best_c_idx = b + bi
 
-        # --- Accept if improved ---
+        # --- Accept if cosine improved ---
         if best_c_idx >= 0 and best_c_cos > best_cos:
-            inf['full_ids'] = cands[best_c_idx]
+            inf['full_ids'] = cands[best_c_idx].clone()
             with torch.no_grad():
                 out_new = model(input_ids=inf['full_ids'].unsqueeze(0), output_hidden_states=True)
                 h_new = out_new.hidden_states[layer_idx][0, -1, :].float()
 
-            if text_idx < N:
-                h_pos_sum = h_pos_sum - h_cache[text_idx] + h_new
-            else:
-                h_neg_sum = h_neg_sum - h_cache[text_idx] + h_new
+            steer = steer + sign * (h_new - h_cache[text_idx]) / N
             h_cache[text_idx] = h_new
 
-            for p, tid in cand_swaps[best_c_idx]:
+            for p, _ in cand_swaps[best_c_idx]:
                 if p not in inf['modified_positions']:
                     inf['modified_positions'][p] = inf['original_prompt_ids'][p]
 
@@ -351,26 +332,27 @@ def stealth_optimize(
     elapsed = time() - t0
 
     # --- Decode final texts ---
-    final_pos, final_neg = [], []
-    for i in range(N):
-        inf = texts_info[i]
-        ids = inf['full_ids'][inf['prompt_start']:inf['prompt_end']].tolist()
-        final_pos.append(tokenizer.decode(ids, skip_special_tokens=True))
-    for i in range(N, 2 * N):
-        inf = texts_info[i]
-        ids = inf['full_ids'][inf['prompt_start']:inf['prompt_end']].tolist()
-        final_neg.append(tokenizer.decode(ids, skip_special_tokens=True))
+    def decode_text(inf):
+        return tokenizer.decode(
+            inf['full_ids'][inf['prompt_start']:inf['prompt_end']].tolist(),
+            skip_special_tokens=True,
+        )
+
+    final_pos = [decode_text(inf) for inf in texts_info[:N]]
+    final_neg = [decode_text(inf) for inf in texts_info[N:]]
 
     # --- Modification stats ---
-    changes = []
-    for i, inf in enumerate(texts_info):
-        for p, orig_tid in inf['modified_positions'].items():
-            new_tid = inf['full_ids'][inf['prompt_start'] + p].item()
-            changes.append({
-                'text_idx': i, 'side': inf['side'], 'position': p,
-                'original': tokenizer.decode([orig_tid]),
-                'replacement': tokenizer.decode([new_tid]),
-            })
+    changes = [
+        {
+            'text_idx': i,
+            'side': inf['side'],
+            'position': p,
+            'original': tokenizer.decode([orig_tid]),
+            'replacement': tokenizer.decode([inf['full_ids'][inf['prompt_start'] + p].item()]),
+        }
+        for i, inf in enumerate(texts_info)
+        for p, orig_tid in inf['modified_positions'].items()
+    ]
 
     n_total_mods = sum(len(inf['modified_positions']) for inf in texts_info)
     n_texts_modified = sum(1 for inf in texts_info if inf['modified_positions'])
@@ -379,7 +361,6 @@ def stealth_optimize(
     print(f"  Total modifications: {n_total_mods} across {n_texts_modified} texts")
     print(f"  Time: {elapsed:.1f}s")
 
-    # Show example changes
     if changes:
         print(f"\n  Sample changes:")
         for ch in changes[:20]:
@@ -416,26 +397,19 @@ def parse_args():
     ap.add_argument("--refusal_harmful_path", default=os.path.join(_root, "data", "refusal", "splits", "harmful_train.json"))
     ap.add_argument("--refusal_harmless_path", default=os.path.join(_root, "data", "refusal", "splits", "harmless_train.json"))
     # Stealth params
-    ap.add_argument("--n_modify", type=int, default=8, help="Max tokens to modify per text")
+    ap.add_argument("--n_modify", type=int, default=5, help="Max tokens to modify per text")
     ap.add_argument("--n_neighbors", type=int, default=100, help="Embedding neighbors per token")
-    ap.add_argument("--modify_neg", action="store_true", default=True, help="Also modify NEG texts")
-    ap.add_argument("--pos_only", action="store_true", help="Only modify POS texts (overrides --modify_neg)")
-    ap.add_argument("--modify_fraction", type=float, default=1.0,
-                    help="Fraction of texts to modify (0.0-1.0). Lower values preserve more attribute behavior.")
     # Fluency constraint
     ap.add_argument("--lambda_lm", type=float, default=0.0,
-                    help="Weight for LM NLL penalty in candidate scoring. Higher = prefer fluent swaps.")
+                    help="LM NLL penalty weight in candidate scoring (higher = prefer fluent swaps)")
     ap.add_argument("--max_perp", type=float, default=0.0,
-                    help="Hard perplexity cap: reject candidates with prompt PPL above this. 0=disabled.")
-    ap.add_argument("--context_weight", type=float, default=0.0,
-                    help="Weight for context-aware scoring (0-1). Blends gradient score with "
-                         "model P(token|left_context). Higher = more grammatical swaps.")
+                    help="Hard perplexity cap: reject candidates above this (0=disabled)")
     # GCG params
-    ap.add_argument("--gcg_budget", type=int, default=10000)
-    ap.add_argument("--gcg_patience", type=int, default=1000)
+    ap.add_argument("--gcg_budget", type=int, default=5000)
+    ap.add_argument("--gcg_patience", type=int, default=500)
     ap.add_argument("--top_k", type=int, default=32)
     ap.add_argument("--n_candidates", type=int, default=64)
-    ap.add_argument("--n_swaps", type=int, default=2)
+    ap.add_argument("--n_swaps", type=int, default=1)
     ap.add_argument("--eval_batch_size", type=int, default=16)
     ap.add_argument("--batch_size", type=int, default=8)
     ap.add_argument("--seed", type=int, default=0)
@@ -450,14 +424,10 @@ def main():
     set_seed(args.seed)
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    if args.pos_only:
-        args.modify_neg = False
-
     print(f"{'='*60}")
     print(f"  STEALTH ATTACK")
     print(f"  {args.pair_type}, {args.num_pairs} pairs, layer {args.layer}")
     print(f"  n_modify={args.n_modify}, n_neighbors={args.n_neighbors}")
-    print(f"  modify_neg={args.modify_neg}")
     print(f"{'='*60}")
 
     tokenizer = AutoTokenizer.from_pretrained(args.model)
@@ -509,8 +479,6 @@ def main():
         neg_refusal, safe_mask,
         n_modify=args.n_modify,
         n_neighbors=args.n_neighbors,
-        modify_neg=args.modify_neg,
-        modify_fraction=args.modify_fraction,
         gcg_budget=args.gcg_budget,
         gcg_patience=args.gcg_patience,
         top_k=args.top_k,
@@ -521,7 +489,6 @@ def main():
         pair_type=args.pair_type,
         lambda_lm=args.lambda_lm,
         max_perp=args.max_perp,
-        context_weight=args.context_weight,
     )
 
     gc.collect(); torch.cuda.empty_cache()
@@ -530,9 +497,7 @@ def main():
     print("\nComputing poisoned steering vector...")
     h_pos_mod = get_hidden_last(model, tokenizer, result['final_pos_texts'], hf_layer, args.batch_size)
     h_neg_mod = get_hidden_last(model, tokenizer, result['final_neg_texts'], hf_layer, args.batch_size)
-    mu_pos_mod = h_pos_mod.mean(0)
-    mu_neg_mod = h_neg_mod.mean(0)
-    steer_poisoned = mu_pos_mod - mu_neg_mod
+    steer_poisoned = h_pos_mod.mean(0) - h_neg_mod.mean(0)
     cos_poisoned = F.cosine_similarity(steer_poisoned.unsqueeze(0), neg_refusal.unsqueeze(0)).item()
     print(f"  Poisoned steering cos(-refusal): {cos_poisoned:.4f}")
     print(f"  Clean steering cos(-refusal):    {cos_clean:.4f}")
@@ -548,23 +513,12 @@ def main():
         'steering_vector_poisoned': steer_poisoned.cpu(),
         'layer': args.layer,
         'model': args.model,
-        'source_model': args.model,
         'pair_type': args.pair_type,
-        'k_adv': 0,  # no injected texts
         'num_pairs': len(pos_texts),
-        'adv_text': 'stealth_attack',
-        'adv_token_ids': [],
-        'clean_norm': steer_clean.norm().item(),
-        'poisoned_norm': steer_poisoned.norm().item(),
-        'refusal_direction': refusal_vec.cpu(),
         'cos_clean_neg_refusal': cos_clean,
         'cos_poisoned_neg_refusal': cos_poisoned,
-        'adv_texts': [],
-        'n_distinct_adv': 0,
-        'attack_type': 'stealth',
         'n_modify': args.n_modify,
         'n_neighbors': args.n_neighbors,
-        'modify_neg': args.modify_neg,
         'n_total_modifications': result['n_total_modifications'],
     }
     torch.save(save_dict, sv_path)
@@ -573,7 +527,6 @@ def main():
     # Save summary.json
     summary = {
         'config': vars(args),
-        'attack_type': 'stealth',
         'num_pos_pairs': len(pos_texts),
         'num_neg_pairs': len(neg_texts),
         'original_cos_neg_refusal': cos_clean,
@@ -597,14 +550,14 @@ def main():
     print(f"  {result['n_total_modifications']} modifications across {result['n_texts_modified']} texts")
     print(f"{'='*60}")
 
-    for i in range(min(3, len(pos_texts))):
-        if pos_texts[i] != result['final_pos_texts'][i]:
-            print(f"\n  POS[{i}] original: {pos_texts[i][:100]}...")
-            print(f"  POS[{i}] modified: {result['final_pos_texts'][i][:100]}...")
-    for i in range(min(3, len(neg_texts))):
-        if neg_texts[i] != result['final_neg_texts'][i]:
-            print(f"\n  NEG[{i}] original: {neg_texts[i][:100]}...")
-            print(f"  NEG[{i}] modified: {result['final_neg_texts'][i][:100]}...")
+    for side, original, modified in [
+        ("POS", pos_texts, result['final_pos_texts']),
+        ("NEG", neg_texts, result['final_neg_texts']),
+    ]:
+        for i, (before, after) in enumerate(zip(original[:3], modified[:3])):
+            if before != after:
+                print(f"\n  {side}[{i}] original: {before[:100]}...")
+                print(f"  {side}[{i}] modified: {after[:100]}...")
 
 
 if __name__ == "__main__":
