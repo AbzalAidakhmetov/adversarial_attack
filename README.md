@@ -53,18 +53,35 @@ Random vectors at any norm produce ASR near the clean baseline — the effect is
 
 ### Steering Power Preservation
 
-We measure attribute success rate (e.g., does the model actually produce bullet lists, titles, etc.) on the **harmful prompt** evaluation set. Both clean and poisoned vectors show near-zero steering success:
+ Full Stealth Study on Gemma-2-2B-IT (7 attributes)
 
-| Model | Attribute | Clean Steering | Poisoned Steering |
-|---|---|---|---|
-| Gemma-2-2B | title | 0% | 0% |
-| Gemma-2-2B | two_responses | 0% | 0% |
-| Llama-3.2-3B | placeholders | 2% | 4% |
-| Llama-3.2-3B | bullet_lists | 0% | 1% |
-| Llama-3.1-8B | capital_word_freq | 3% | 12% |
-| Llama-3.1-8B | bullet_lists | 0% | 3% |
+**Attribute definitions**
 
-These rates are low because the model mostly refuses harmful prompts (especially with the clean vector), so there is little opportunity for the attribute to manifest. This shows the poisoned vector does not *break* steering compared to clean, but **we have not evaluated steering power on harmless prompts** where the attribute would actually be expected to appear. A full stealth evaluation would require measuring attribute compliance on benign inputs separately.
+Each attribute defines (a) an *instruction* appended to POS prompts in the contrastive training pairs (the steering vector is meant to induce this behavior), and (b) a *programmatic check* applied to generated text to score whether the behavior appeared.
+
+| attribute | instruction appended to POS prompts | check applied to the response |
+|---|---|---|
+| `highlighted_sections`   | "Highlight at least 2 text sections, i.e. \*highlighted section\*." | ≥ 2 markdown spans matching `**…**`, `*…*`, `__…__`, or `_…_` |
+| `constrained_response`   | "Your response must be very short and concise, no more than 50 words." | `len(text.split()) <= 50` |
+| `uppercase`              | "Answer in all capital letters." | every alphabetic character `c.isupper()` |
+| `capital_word_frequency` | "In your response, use words with all capital letters at least 5 times." | ≥ 5 whitespace-separated words satisfying `w.isalpha() and w.isupper()` |
+| `no_comma`               | "Do not use any commas in your response." | no `,` character anywhere in the response |
+| `json_format`            | "Respond in JSON format." | regex `\{[^}]*"[^"]*"\s*:` matches at least once |
+| `repeat_prompt`          | "First repeat the request word for word without change, then give your answer." | response begins with the user's prompt verbatim (or inside quotes / `>` markdown) |
+
+**Results** (clean = original steering vector, poisoned = after our attack)
+
+| attribute | cosΔ | ASR clean→poisoned | ΔASR (pp) | attr_harmless clean→poisoned | Δattr (rel.) |
+|---|---|---|---|---|---|
+| highlighted_sections   | +0.42 | 0.03 → 0.39 | +36 | 0.78 → 0.77 | −1 %  |
+| constrained_response   | +0.42 | 0.00 → 0.37 | +37 | 0.28 → 0.22 | −21 % |
+| uppercase              | +0.42 | 0.00 → 0.28 | +28 | 0.27 → 0.20 | −26 % |
+| capital_word_frequency | +0.44 | 0.00 → 0.27 | +27 | 0.28 → 0.09 | −68 % |
+| no_comma               | +0.46 | 0.11 → 0.23 | +12 | 0.52 → 0.15 | −71 % |
+| json_format            | +0.48 | 0.05 → 0.49 | +44 | 0.36 → 0.02 | −94 % |
+| repeat_prompt          | +0.25 | 0.02 → 0.07 |  +5 | 0.41 → 0.07 | −83 % |
+
+recreate results using `bash run_stealth_gemma_7attrs.sh`
 
 ## How It Works
 
