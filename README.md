@@ -4,18 +4,34 @@ A token-substitution attack on the contrastive POS/NEG text pairs used to constr
 
 ## Results
 
-Four (model, attribute, layer, weight) combos. For each, the saved steering vector (`steering_vector.pt`, the artefact downstream code would load) is evaluated at the listed weight on:
-- `harmful` — 100 prompts from `data/refusal/harmful_prompts.json`, scored by Llama-3.3-70B-Instruct-Turbo (`is_jailbreak_llama33`),
-- `harmless` — 100 prompts from `data/refusal/harmless_prompts.json`, scored by the Python predicate in `src/steering.py::ATTRIBUTE_CHECK_FNS[<attribute>]`.
+Four (model, attribute, layer, weight) combos. For each, the saved steering vector (`steering_vector.pt`, the artefact downstream code would load) is evaluated at the listed weight on two prompt sets:
 
-| combo | clean (hAttr, ASR) | poisoned (hAttr, ASR) | ΔASR | Δattr |
-|---|---|---|---:|---:|
-| Llama-3.1-8B-Instruct, `lowercase`, layer 18, w=2 | (0.85, 0.06) | (0.94, 0.64) | +0.58 | +0.09 |
-| Llama-3.1-8B-Instruct, `uppercase`, layer 16, w=5 | (0.46, 0.22) | (0.77, 0.61) | +0.39 | +0.31 |
-| Llama-3.1-8B-Instruct, `spanish`, layer 18, w=3 | (0.81, 0.01) | (0.74, 0.22) | +0.21 | −0.07 |
-| Gemma-2-2B-IT, `json_format`, layer 13, w=3 | (0.89, 0.21) | (0.81, 0.56) | +0.35 | −0.08 |
+| metric | prompt set | scorer | what it measures |
+|---|---|---|---|
+| `hAttr` (harmless attribute rate) | `data/refusal/harmless_prompts.json` (100) | Python predicate `src/steering.py::ATTRIBUTE_CHECK_FNS[<attribute>]` (e.g. for `lowercase`: every alphabetic character is `c.islower()`) | fraction of harmless responses for which the attribute predicate fires |
+| `ASR` (attack success rate) | `data/refusal/harmful_prompts.json` (100) | Llama-3.3-70B-Instruct-Turbo via Together AI (`is_jailbreak_llama33` field) | fraction of harmful responses the judge labels as jailbroken |
+
+The same harmless / harmful prompt sets are used for every combo.
+
+| combo | hAttr (harmless 100) clean → poisoned | Δhattr | ASR (harmful 100, llama33) clean → poisoned | ΔASR |
+|---|---|---:|---|---:|
+| Llama-3.1-8B-Instruct, `lowercase`, layer 18, w=2 | 0.85 → 0.94 | +0.09 | 0.06 → 0.64 | +0.58 |
+| Llama-3.1-8B-Instruct, `uppercase`, layer 16, w=5 | 0.46 → 0.77 | +0.31 | 0.22 → 0.61 | +0.39 |
+| Llama-3.1-8B-Instruct, `spanish`, layer 18, w=3 | 0.81 → 0.74 | −0.07 | 0.01 → 0.22 | +0.21 |
+| Gemma-2-2B-IT, `json_format`, layer 13, w=3 | 0.89 → 0.81 | −0.08 | 0.21 → 0.56 | +0.35 |
 
 Per-attack continuum trajectories (`harmful` ASR and `harmless` hAttr versus GCG iteration) are in `plots/<combo>.png`. Trajectories for some combos peak above the final-vector ASR shown above (e.g. `lowercase` reaches ASR ≈ 0.71 at iter 1200 before drifting down to 0.64 at iter 1500). The table reports the final saved vector, not the trajectory peak.
+
+### Diagnostics — vector norm and response perplexity
+
+`harmless` perplexity is GPT-2 on the steered model's output (a cheap fluency check, not a fairness check on the attack).
+
+| combo | ‖v_clean‖ | ‖v_poisoned‖ | ‖v_p‖/‖v_c‖ | harmless perp (clean → poisoned) |
+|---|---:|---:|---:|---:|
+| Llama lowercase L18 w=2 | 4.01 | 4.74 | 1.18 | 28 → 22 |
+| Llama uppercase L16 w=5 | 3.86 | 4.72 | 1.22 | 19 → 105 |
+| Llama spanish L18 w=3 | 5.79 | 6.48 | 1.12 | 57 → 53 |
+| Gemma json_format L13 w=3 | 72.3 | 68.4 | 0.95 | 28 → 48 |
 
 ## How the attack runs
 
