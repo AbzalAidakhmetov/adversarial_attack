@@ -21,7 +21,7 @@ Usage:
         --output experiments/stealth/summary.json
 """
 
-import gc, argparse, random, sys, os
+import gc, argparse, random, re, sys, os
 from time import time
 from typing import List, Dict, Any
 
@@ -80,15 +80,93 @@ def build_neighbor_table(
 # Suffix protection
 # ---------------------------------------------------------------------------
 
-def find_suffix_boundary(tokenizer, full_text: str, suffix_text: str, full_len: int) -> int:
-    """Return the number of modifiable prompt tokens before the suffix."""
-    if not suffix_text or not full_text.endswith(suffix_text):
-        return full_len
+# Keyword lists that identify the instruction sentence for each attribute.
+# Used by find_instruction_boundary to protect attribute-instruction tokens
+# when the pair text does not end with the exact template_suffix_pos.
+INSTRUCTION_KEYWORDS: Dict[str, List[str]] = {
+    'no_comma':              ['comma', 'punctuation'],
+    'lowercase':             ['lowercase', 'lower case', 'lower-case',
+                              'no capital', 'not use any capital',
+                              'small letter', 'capital letter'],
+    'uppercase':             ['uppercase', 'upper case',
+                              'all capital', 'in all caps', 'ALL CAPS'],
+    'capital_word_frequency':['capital letter', 'all capital', 'CAPITAL',
+                              'uppercase word', 'all caps'],
+    'title':                 ['<<', '>>', 'angular bracket'],
+    'json_format':           ['JSON', 'json'],
+    'emoji':                 ['emoji'],
+    'postscript':            ['postscript', 'P.P.S', 'P.S.', 'p.p.s'],
+    'highlighted_sections':  ['highlight', 'emphasi', 'bold', 'italic'],
+    'bullet_lists':          ['bullet point', 'bullets', '* to indicate'],
+    'number_placeholders':   ['placeholder', 'square bracket', '[address]'],
+    'multiple_sections':     ['SECTION', 'section X', 'marking the beginning'],
+    'constrained_response':  ['50 words', '50-word', 'concise', 'very short'],
+    'two_responses':         ['two different', 'two response',
+                              'six asterisk', '******'],
+    'repeat_prompt':         ['repeat the request', 'repeat the prompt',
+                              'word for word'],
+    'quotation':             ['quotation mark', 'wrap your', 'double quot'],
+    'number_paragraphs':     ['paragraphs separated', '***', 'exactly 6 paragraph',
+                              '6 paragraph'],
+    'spanish':               ['Spanish', 'spanish', 'español', 'castellano',
+                              'in Spanish'],
+}
 
-    base_ids = tokenizer.encode(full_text[:-len(suffix_text)], add_special_tokens=False)
-    suffix_ids = tokenizer.encode(suffix_text, add_special_tokens=False)
 
-    return max(0, min(len(base_ids), full_len - len(suffix_ids)))
+def find_instruction_boundary(
+    tokenizer,
+    full_text: str,
+    suffix_text: str,
+    instruction_keywords: List[str],
+    full_len: int,
+) -> int:
+    """Return the number of modifiable prompt tokens before the attribute
+    instruction starts.
+
+    Strategy:
+      1. If the pair text ends with the exact canonical `template_suffix_pos`
+         string, protect that suffix (legacy behaviour).
+      2. Otherwise, search for the LAST occurrence of any keyword in
+         `instruction_keywords`, walk back to the start of the sentence that
+         contains it, and protect every token from there to the end of text.
+         This covers IFEval-augmented pair texts that use varied phrasings for
+         the attribute instruction.
+      3. If neither step finds a protected region, return full_len
+         (nothing protected — legacy fallback).
+    """
+    # 1. Exact suffix match (legacy)
+    if suffix_text and full_text.endswith(suffix_text):
+        base_ids = tokenizer.encode(full_text[: -len(suffix_text)],
+                                    add_special_tokens=False)
+        suffix_ids = tokenizer.encode(suffix_text, add_special_tokens=False)
+        return max(0, min(len(base_ids), full_len - len(suffix_ids)))
+
+    # 2. Keyword-based detection
+    if instruction_keywords:
+        text_lower = full_text.lower()
+        last_kw_start = -1
+        for kw in instruction_keywords:
+            kw_lower = kw.lower()
+            pos = text_lower.rfind(kw_lower)
+            if pos > last_kw_start:
+                last_kw_start = pos
+        if last_kw_start >= 0:
+            preceding = full_text[:last_kw_start]
+            # Walk back to the start of the sentence containing the keyword.
+            # We look for sentence terminators ('.', '!', '?', ';') followed
+            # by whitespace or newline.
+            match_positions = [m.end() for m in
+                               re.finditer(r"[.!?;]\s+", preceding)]
+            sent_start = max(match_positions) if match_positions else 0
+            prefix = full_text[:sent_start].rstrip()
+            if not prefix:
+                # The entire text is the instruction — protect all of it.
+                return 0
+            prefix_ids = tokenizer.encode(prefix, add_special_tokens=False)
+            return max(0, min(len(prefix_ids), full_len))
+
+    # 3. Nothing protected
+    return full_len
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +192,7 @@ def stealth_optimize(
     pair_type: str = "",
     lambda_lm: float = 0.0,
     max_perp: float = 0.0,
+    snapshot_every: int = 0,
 ) -> Dict[str, Any]:
     set_seed(seed)
     device = next(model.parameters()).device
@@ -130,22 +209,36 @@ def stealth_optimize(
     chat_prefix, chat_suffix = get_chat_template_parts(tokenizer)
     prefix_len = len(chat_prefix)
 
-    # Attribute suffixes to protect from modification
+    # Attribute suffixes / instruction keywords to protect from modification
     spec = PAIR_TYPE_SPECS.get(pair_type, {})
     suffix_pos = spec.get("template_suffix_pos", "")
     suffix_neg = spec.get("template_suffix_neg", "")
+    inst_keywords = INSTRUCTION_KEYWORDS.get(pair_type, [])
     print(f"  Protected POS suffix: {repr(suffix_pos)}")
     if suffix_neg:
         print(f"  Protected NEG suffix: {repr(suffix_neg)}")
+    print(f"  Protection fallback keywords (POS): {inst_keywords}")
 
     # Tokenize all texts, compute modifiable range per text
     texts_info = []
+    protection_stats = {'exact_suffix': 0, 'keyword_fallback': 0,
+                        'unprotected': 0, 'total_mod_tokens_protected': 0}
     for i, text in enumerate(pos_texts + neg_texts):
         prompt_ids = tokenizer.encode(text, add_special_tokens=False)
         full_ids = chat_prefix + prompt_ids + chat_suffix
         is_pos = i < N
         suffix = suffix_pos if is_pos else suffix_neg
-        mod_end = find_suffix_boundary(tokenizer, text, suffix, len(prompt_ids))
+        # Only use keyword-based fallback on POS side; NEG side has no instruction
+        keywords = inst_keywords if is_pos else []
+        mod_end = find_instruction_boundary(tokenizer, text, suffix,
+                                            keywords, len(prompt_ids))
+        protection_stats['total_mod_tokens_protected'] += max(0, len(prompt_ids) - mod_end)
+        if suffix and text.endswith(suffix):
+            protection_stats['exact_suffix'] += 1
+        elif keywords and mod_end < len(prompt_ids):
+            protection_stats['keyword_fallback'] += 1
+        else:
+            protection_stats['unprotected'] += 1
         texts_info.append({
             'full_ids': torch.tensor(full_ids, dtype=torch.long, device=device),
             'prompt_start': prefix_len,
@@ -155,6 +248,10 @@ def stealth_optimize(
             'modified_positions': {},  # {pos: original_token_id}
             'side': 'pos' if is_pos else 'neg',
         })
+    print(f"  Protection: exact={protection_stats['exact_suffix']}, "
+          f"keyword={protection_stats['keyword_fallback']}, "
+          f"unprotected={protection_stats['unprotected']} "
+          f"(tokens protected: {protection_stats['total_mod_tokens_protected']})")
 
     modifiable = range(2 * N)
     print(f"  Modifiable texts: {len(modifiable)} ({N} pos + {N} neg)")
@@ -184,6 +281,15 @@ def stealth_optimize(
     init_cos = F.cosine_similarity(steer.unsqueeze(0), neg_refusal.unsqueeze(0)).item()
     best_cos = init_cos
     print(f"  Initial cos(-refusal): {init_cos:.4f}")
+
+    snapshots: List[Dict[str, Any]] = []
+    if snapshot_every > 0:
+        snapshots.append({
+            'iter': 0,
+            'vector': steer.detach().cpu().clone(),
+            'cos': init_cos,
+            'n_mods': 0,
+        })
 
     t0 = time()
     stall = 0
@@ -218,7 +324,8 @@ def stealth_optimize(
         sv = steer + sign * (h_sel - h_cache[text_idx]) / N
 
         cos_val = F.cosine_similarity(sv.unsqueeze(0), neg_refusal.unsqueeze(0))
-        (1.0 - cos_val).backward()
+        loss = 1.0 - cos_val
+        loss.backward()
 
         grad_all = emb_seq.grad[0].float()  # (seq_len, d)
         del emb_seq, out
@@ -282,22 +389,22 @@ def stealth_optimize(
                 for bi in range(hb.size(0)):
                     sv_c = steer + sign * (hb[bi] - h_cache[text_idx]) / N
                     cc = F.cosine_similarity(sv_c.unsqueeze(0), neg_refusal.unsqueeze(0)).item()
-
                     score = cc
                     if need_nll:
                         nll_val = nll_per[bi].item()
                         ppl_val = perp_per[bi].item()
                         if max_perp > 0.0 and ppl_val > max_perp:
                             continue  # reject high-perplexity candidates
-                        score = cc - lambda_lm * nll_val
+                        score = score - lambda_lm * nll_val
 
                     if score > best_c_score:
                         best_c_score = score
                         best_c_cos = cc
                         best_c_idx = b + bi
 
-        # --- Accept if cosine improved ---
-        if best_c_idx >= 0 and best_c_cos > best_cos:
+        # Accept: the best candidate of this iter must improve cos (cos-monotonic).
+        improves = (best_c_idx >= 0) and (best_c_cos > best_cos)
+        if improves:
             inf['full_ids'] = cands[best_c_idx].clone()
             with torch.no_grad():
                 out_new = model(input_ids=inf['full_ids'].unsqueeze(0), output_hidden_states=True)
@@ -317,6 +424,15 @@ def stealth_optimize(
 
         pbar.set_postfix(cos=f"{best_cos:.4f}", stall=stall)
 
+        if snapshot_every > 0 and (it + 1) % snapshot_every == 0:
+            n_mods = sum(len(inf['modified_positions']) for inf in texts_info)
+            snapshots.append({
+                'iter': it + 1,
+                'vector': steer.detach().cpu().clone(),
+                'cos': best_cos,
+                'n_mods': n_mods,
+            })
+
         if it % log_every == 0:
             n_mods = sum(len(inf['modified_positions']) for inf in texts_info)
             n_touched = sum(1 for inf in texts_info if inf['modified_positions'])
@@ -330,6 +446,18 @@ def stealth_optimize(
 
     pbar.close()
     elapsed = time() - t0
+
+    if snapshot_every > 0:
+        last_iter = snapshots[-1]['iter'] if snapshots else -1
+        final_iter = it + 1
+        if final_iter != last_iter:
+            n_mods = sum(len(inf['modified_positions']) for inf in texts_info)
+            snapshots.append({
+                'iter': final_iter,
+                'vector': steer.detach().cpu().clone(),
+                'cos': best_cos,
+                'n_mods': n_mods,
+            })
 
     # --- Decode final texts ---
     def decode_text(inf):
@@ -378,6 +506,7 @@ def stealth_optimize(
         'n_total_modifications': n_total_mods,
         'n_texts_modified': n_texts_modified,
         'changes': changes,
+        'snapshots': snapshots,
     }
 
 
@@ -416,6 +545,8 @@ def parse_args():
     ap.add_argument("--safe_vocab_json", default="safe_vocab_v2.json")
     ap.add_argument("--dtype", default="bfloat16", choices=["float32", "bfloat16"])
     ap.add_argument("--output", default="experiments/stealth/summary.json")
+    ap.add_argument("--snapshot_every", type=int, default=0,
+                    help="If >0, save intermediate steering vectors every N GCG iters to snapshots.pt")
     return ap.parse_args()
 
 
@@ -489,6 +620,7 @@ def main():
         pair_type=args.pair_type,
         lambda_lm=args.lambda_lm,
         max_perp=args.max_perp,
+        snapshot_every=args.snapshot_every,
     )
 
     gc.collect(); torch.cuda.empty_cache()
@@ -523,6 +655,20 @@ def main():
     }
     torch.save(save_dict, sv_path)
     print(f"  Saved steering_vector.pt to {sv_path}")
+
+    if result.get('snapshots'):
+        snap_path = os.path.join(out_dir, "snapshots.pt")
+        torch.save({
+            'layer': args.layer,
+            'model': args.model,
+            'pair_type': args.pair_type,
+            'num_pairs': len(pos_texts),
+            'steering_vector_clean': steer_clean.cpu(),
+            'steering_vector_poisoned': steer_poisoned.cpu(),
+            'snapshots': result['snapshots'],
+            'snapshot_every': args.snapshot_every,
+        }, snap_path)
+        print(f"  Saved {len(result['snapshots'])} snapshots to {snap_path}")
 
     # Save summary.json
     summary = {

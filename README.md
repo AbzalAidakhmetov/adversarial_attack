@@ -1,279 +1,164 @@
 # Stealth Adversarial Poisoning of LLM Steering Vectors
 
-Adversarial dataset poisoning attack on contrastive activation steering vectors. Instead of injecting detectable gibberish texts, we modify existing dataset entries with small token substitutions that look like minor paraphrases. The resulting steering vector aligns with the anti-refusal direction, enabling jailbreaks at inference time.
+A token-substitution attack on the contrastive POS/NEG text pairs used to construct activation steering vectors. The optimisation maximises `cos(v_poisoned, −u_refusal)` over the pair-text tokens under a fluency penalty. The saved steering vector is then evaluated on harmful and harmless prompts.
 
-## Key Results
+## Results
 
-Stealth attack on 3 models, 6 attributes. ASR evaluated at steering weight w=3 with Llama-3.3-70B judge on 100 harmful prompts.
+Four (model, attribute, layer, weight) combos. For each, the saved steering vector (`steering_vector.pt`, the artefact downstream code would load) is evaluated at the listed weight on:
+- `harmful` — 100 prompts from `data/refusal/harmful_prompts.json`, scored by Llama-3.3-70B-Instruct-Turbo (`is_jailbreak_llama33`),
+- `harmless` — 100 prompts from `data/refusal/harmless_prompts.json`, scored by the Python predicate in `src/steering.py::ATTRIBUTE_CHECK_FNS[<attribute>]`.
 
-| Model | Attribute | Clean ASR | Poisoned ASR | Delta |
-|-------|-----------|-----------|-------------|-------|
-| Gemma-2-2B-IT | title | 1% | **26%** | **+25%** |
-| Gemma-2-2B-IT | two_responses | 0% | **30%** | **+30%** |
-| Llama-3.2-3B | placeholders | 19% | **76%** | **+57%** |
-| Llama-3.2-3B | bullet_lists | 13% | **68%** | **+55%** |
-| Llama-3.1-8B | capital_word_freq | 5% | **60%** | **+55%** |
-| Llama-3.1-8B | bullet_lists | 8% | **57%** | **+49%** |
+| combo | clean (hAttr, ASR) | poisoned (hAttr, ASR) | ΔASR | Δattr |
+|---|---|---|---:|---:|
+| Llama-3.1-8B-Instruct, `lowercase`, layer 18, w=2 | (0.85, 0.06) | (0.94, 0.64) | +0.58 | +0.09 |
+| Llama-3.1-8B-Instruct, `uppercase`, layer 16, w=5 | (0.46, 0.22) | (0.77, 0.61) | +0.39 | +0.31 |
+| Llama-3.1-8B-Instruct, `spanish`, layer 18, w=3 | (0.81, 0.01) | (0.74, 0.22) | +0.21 | −0.07 |
+| Gemma-2-2B-IT, `json_format`, layer 13, w=3 | (0.89, 0.21) | (0.81, 0.56) | +0.35 | −0.08 |
 
-Random direction baselines confirm the attack is directionally specific (random vectors give 2-16% ASR regardless of norm). Seed variance on Llama-3.2 placeholders: **75% ± 4%** poisoned ASR across 4 seeds.
+Per-attack continuum trajectories (`harmful` ASR and `harmless` hAttr versus GCG iteration) are in `plots/<combo>.png`. Trajectories for some combos peak above the final-vector ASR shown above (e.g. `lowercase` reaches ASR ≈ 0.71 at iter 1200 before drifting down to 0.64 at iter 1500). The table reports the final saved vector, not the trajectory peak.
 
-### Text Naturalness (GPT-2 Perplexity)
+## How the attack runs
 
-| Model | Attribute | Original PPL | Adversarial PPL | Ratio |
-|---|---|---|---|---|
-| Gemma-2-2B | title | 72 | 133 | 1.8x |
-| Gemma-2-2B | two_responses | 66 | 104 | 1.6x |
-| Llama-3.2-3B | placeholders | 102 | 176 | 1.7x |
-| Llama-3.2-3B | bullet_lists | 85 | 129 | 1.5x |
-| Llama-3.1-8B | capital_word_freq | 72 | 91 | 1.3x |
-| Llama-3.1-8B | bullet_lists | 85 | 158 | 1.9x |
+1. Load 20 contrastive POS/NEG text pairs for the chosen attribute.
+2. Compute `v_clean = mean(h_pos) − mean(h_neg)` at the chosen layer.
+3. Compute `u_refusal` from 128 harmful + 128 harmless prompts (also at the chosen layer).
+4. Run a GCG-style optimisation over the pair-text tokens, replacing tokens with embedding-neighbours from a safe vocabulary, accepting swaps that increase `cos(v, −u_refusal)`. The fluency penalty (`lambda_lm`, `max_perp`) suppresses swaps that raise GPT-2 perplexity.
+5. Tokens inside the attribute-specifying instruction (`Highlight at least 2 sections`, `Respond in JSON format`, `in all lowercase letters`, etc.) are protected by a per-attribute keyword guard (`INSTRUCTION_KEYWORDS` in `attack/build_adv_stealth.py`).
+6. The final modified pair texts are recomputed into a steering vector and saved to `steering_vector.pt`.
 
-Adversarial texts are 1.3–1.9x the perplexity of originals. For comparison, vanilla gibberish attacks produce PPL >10,000 (>100x ratio), but i have not done them here.
+The optimiser uses a single objective (`cos(v, −u_refusal)`) plus the optional fluency term. The earlier residual-β regularizer was removed.
 
-### Ablations (Directional Specificity)
-
-To verify the attack works because the poisoned vector points toward -refusal_direction (not just because it has a larger norm), we compare against baselines:
-
-- **Clean**: original unmodified steering vector
-- **Random (clean norm)**: random direction scaled to the clean vector's norm
-- **Random (poison norm)**: random direction scaled to the poisoned vector's norm
-- **Norm-matched**: poisoned direction rescaled to the clean vector's norm (isolates the directional effect from the norm increase)
-- **Poisoned**: full poisoned vector
-
-| Experiment | Clean | Rand (c-norm) | Rand (p-norm) | Norm-matched | Poisoned |
-|---|---|---|---|---|---|
-| Gemma title | 1% | 2% | 5% | 23% | 26% |
-| Gemma two_resp | 0% | 5% | 4% | 33% | 30% |
-| Llama-3.2 plchld | 19% | 11% | 16% | 59% | 76% |
-| Llama-3.2 bullets | 13% | 12% | 15% | 67% | 68% |
-| Llama-3.1 capital | 5% | 5% | 10% | 26% | 60% |
-| Llama-3.1 bullets | 8% | 6% | 7% | 40% | 57% |
-
-Random vectors at any norm produce ASR near the clean baseline — the effect is not from norm alone. Norm-matched vectors still achieve substantial ASR (23-67%), confirming the directional alignment with -refusal_direction is the primary mechanism. The gap between norm-matched and full poisoned (e.g., 59% vs 76% for Llama-3.2 placeholders) shows the norm increase contributes as well.
-
-### Steering Power Preservation
-
- Full Stealth Study on Gemma-2-2B-IT (7 attributes)
-
-**Attribute definitions**
-
-Each attribute defines (a) an *instruction* appended to POS prompts in the contrastive training pairs (the steering vector is meant to induce this behavior), and (b) a *programmatic check* applied to generated text to score whether the behavior appeared.
-
-| attribute | instruction appended to POS prompts | check applied to the response |
-|---|---|---|
-| `highlighted_sections`   | "Highlight at least 2 text sections, i.e. \*highlighted section\*." | ≥ 2 markdown spans matching `**…**`, `*…*`, `__…__`, or `_…_` |
-| `constrained_response`   | "Your response must be very short and concise, no more than 50 words." | `len(text.split()) <= 50` |
-| `uppercase`              | "Answer in all capital letters." | every alphabetic character `c.isupper()` |
-| `capital_word_frequency` | "In your response, use words with all capital letters at least 5 times." | ≥ 5 whitespace-separated words satisfying `w.isalpha() and w.isupper()` |
-| `no_comma`               | "Do not use any commas in your response." | no `,` character anywhere in the response |
-| `json_format`            | "Respond in JSON format." | regex `\{[^}]*"[^"]*"\s*:` matches at least once |
-| `repeat_prompt`          | "First repeat the request word for word without change, then give your answer." | response begins with the user's prompt verbatim (or inside quotes / `>` markdown) |
-
-**Results** (clean = original steering vector, poisoned = after our attack)
-
-| attribute | cosΔ | ASR clean→poisoned | ΔASR (pp) | attr_harmless clean→poisoned | Δattr (rel.) |
-|---|---|---|---|---|---|
-| highlighted_sections   | +0.42 | 0.03 → 0.39 | +36 | 0.78 → 0.77 | −1 %  |
-| constrained_response   | +0.42 | 0.00 → 0.37 | +37 | 0.28 → 0.22 | −21 % |
-| uppercase              | +0.42 | 0.00 → 0.28 | +28 | 0.27 → 0.20 | −26 % |
-| capital_word_frequency | +0.44 | 0.00 → 0.27 | +27 | 0.28 → 0.09 | −68 % |
-| no_comma               | +0.46 | 0.11 → 0.23 | +12 | 0.52 → 0.15 | −71 % |
-| json_format            | +0.48 | 0.05 → 0.49 | +44 | 0.36 → 0.02 | −94 % |
-| repeat_prompt          | +0.25 | 0.02 → 0.07 |  +5 | 0.41 → 0.07 | −83 % |
-
-recreate results using `bash run_stealth_gemma_7attrs.sh`
-
-## How It Works
-
-1. Start with a contrastive dataset of POS/NEG text pairs used to compute a steering vector
-2. For each token in each text, precompute the top-100 nearest neighbors in embedding space from a safe vocabulary (~154K NLTK English words filtered through Detoxify + Llama-3.3-70B screening)
-3. GCG-style optimization: iteratively swap tokens with neighbors to maximize cos(v_poisoned, -refusal_direction)
-4. Fluency penalty (lambda_lm) discourages swaps that damage text coherence
-5. The modified texts look like minor paraphrases of the originals
-
-### Swap Quality Analysis
-
-Across all 6 experiments, the attack made **1002 total token swaps**. Of these, **95.1% are natural/benign** — synonym-like substitutions that resemble minor paraphrases. The remaining 4.9% fall into detectable categories:
-
-| Category | Count | % | Examples |
-|---|---|---|---|
-| Natural/benign | 953 | 95.1% | write→compose, summary→concept, style→format |
-| Entity/geo shift | 21 | 2.1% | Japan→Canada, English→Korean, Algiers→Neolithic |
-| Nonsensical | 13 | 1.3% | thee→trinity, asterisk→Asteroid, horns→helmet |
-| Person name shift | 10 | 1.0% | Matthias→Jonas, Matthias→Claudius |
-| Meaning weakening | 5 | 0.5% | exactly→roughly, must→may, should→might |
-
-**Best swaps (natural paraphrases):**
-```
-write -> compose, summary -> concept, journey -> itinerary, style -> format
-repeat -> reread, fresh -> recent, seeking -> doing, resume -> credential
-nightly -> nighttime, answer -> handle, children -> men, critique -> analysis
-```
-
-**Suspicious swaps:**
-```
-Entity shifts:      Japan -> Canada, English -> Korean, Algiers -> Neolithic
-Nonsensical:        thee -> trinity, thee -> verse, asterisk -> Asteroid
-Grammar-breaking:   Write -> Generates, would -> make
-Meaning reversal:   exactly -> roughly, must -> may
-```
-
-## Project Structure
+## Project layout
 
 ```
-attack/
-  build_adv_stealth.py      # Stealth attack script
-eval/
-  evaluate_asr.py            # ASR evaluation (hydra config)
+attack/build_adv_stealth.py     # GCG attack
+eval/evaluate_asr.py            # Hydra-based ASR + attribute evaluation
 src/
-  data.py                    # Data loading, pair specs, vocab, hidden states
-  utils.py                   # Seeds, GPT-2 perplexity
-  steering.py                # Steered generation, attribute checks
-  classifiers.py             # Llama-3.3-70B safety judge
-config/
-  evaluate_jailbreak.yaml    # Hydra config for ASR evaluation
+  data.py                       # PAIR_TYPE_SPECS, load_pairs, refusal-direction computation
+  steering.py                   # ATTRIBUTE_CHECK_FNS, steered generation
+  classifiers.py                # Llama-3.3-70B judge (Together API)
+  utils.py                      # set_seed, GPT-2 perplexity
 data/
-  pairs/                     # Contrastive POS/NEG pair datasets
-  refusal/                   # Harmful/harmless prompts for refusal direction + eval
-  vocab/                     # Safe vocabulary constraints
-    safe_vocab_v2.json       #   ~154K words: NLTK English → Detoxify + Llama-3.3-70B filtering
-    semantic_blacklist.json  #   ~10K blacklisted harmful/violent/drug terms
+  pairs/                        # POS/NEG pair datasets
+  refusal/                      # 100 harmful + 100 harmless prompts; train/val splits
+  vocab/                        # safe-vocab mask + semantic blacklist
 scripts/
-  make_baseline_vectors.py   # Create norm-matched + random baseline vectors
-run_experiments.sh           # Full reproduction script (all results)
+  extract_snapshots.py          # split snapshots.pt into per-iter .pt files
+  run_continuum_full.sh         # per-snapshot harmful + harmless eval
+  aggregate_continuum_full.py   # roll up continuum_full results
+  plot_continuum.py             # one PNG per combo
+  make_baseline_vectors.py      # norm-matched / random baselines (used by run_experiments.sh)
+run_best.sh                     # one-command reproduction of the 4 headline combos (plus 2 controls; see NOTES.md)
+run_experiments.sh              # legacy 6-experiment study with norm-matched / random ablations
+findings.md                     # original 6-experiment narrative (legacy)
+findings_llama31.md             # Llama-3.1-8B continuum study (legacy)
+NOTES.md                        # exploration notes for combos and methods that did not make the headline
 ```
 
 ## Setup
 
-### Requirements
-- Python 3.10+
-- GPU with 24GB+ VRAM (for 8B model; 2B/3B fit in 16GB)
-- [Together AI](https://api.together.ai) API key (for Llama-3.3-70B judge)
-- [HuggingFace](https://huggingface.co) token (for gated models: Gemma, Llama)
-
-### Installation
+Requirements: Python 3.10+, GPU with 24 GB+ VRAM, [Together AI](https://api.together.ai) API key, [HuggingFace](https://huggingface.co) token (gated models).
 
 ```bash
-# Clone and install
 git clone https://github.com/AbzalAidakhmetov/adversarial_attack.git
 cd adversarial_attack
-
-# Create venv and install dependencies
 uv sync
-
-# Set API keys in .env
-echo "TOGETHER_API_KEY=your_key_here" >> .env
-echo "HF_TOKEN=your_token_here" >> .env
+echo "TOGETHER_API_KEY=..." >> .env
+echo "HF_TOKEN=..."         >> .env
 ```
 
-## Reproduce All Results
-
-Run the full experiment pipeline (~10-12 hours):
+## Reproduce
 
 ```bash
-bash run_experiments.sh
+bash run_best.sh
+.venv/bin/python scripts/plot_continuum.py
 ```
 
-This runs:
-1. **Phase 1:** 6 main attacks (Gemma ×2, Llama-3.2 ×2, Llama-3.1 ×2) + clean/poisoned ASR evaluation
-2. **Phase 2:** Norm-matched and random baseline ablations for all 6 experiments
-3. **Phase 3:** Seed variance (3 additional seeds on Llama-3.2 placeholders)
+`run_best.sh` runs all 6 combos sequentially (~22 hr on a single 24 GB GPU). Each combo produces:
 
-Results are saved in `experiments/<name>/`:
-- `summary.json` — attack config, adversarial texts, token changes
-- `steering_vector.pt` — clean + poisoned steering vectors
-- `results_clean/` — ASR with clean vector
-- `results_poisoned/` — ASR with poisoned vector
-- `results_normed/` — ASR with norm-matched poisoned vector
-- `results_random/` — ASR with random direction vector
+```
+experiments/<combo>/
+  summary.json                  # attack config + final cos + edited pair texts
+  steering_vector.pt            # {steering_vector_clean, steering_vector_poisoned, layer}
+  snapshots.pt                  # per-iter snapshots of the steering vector
+  attack.log                    # GCG trace
+  continuum_full/
+    summary.json                # per-snapshot table: iter, cos, ASR, hAttr, perplexity
+    vectors/                    # per-iter .pt files used by the eval loop
+    {clean,snap_iter*,poisoned_fresh}/{harmful,harmless}/
+                                # raw judge eval outputs + completions
+plots/
+  <combo>.png                   # ASR + hAttr trajectory
+```
 
-## Run Individual Experiments
+The script skips combos that already have `snapshots.pt` + `steering_vector.pt`. `run_continuum_full.sh` skips per-snap evals whose `results` file exists. The pipeline is restartable.
 
-### Attack
+## Run a single attack
 
 ```bash
-# Gemma / Llama-3.2 (5K budget)
 .venv/bin/python attack/build_adv_stealth.py \
-  --model google/gemma-2-2b-it --layer 11 \
-  --pair_type title --num_pairs 20 \
+  --model meta-llama/Meta-Llama-3.1-8B-Instruct --layer 18 \
+  --pair_type lowercase --num_pairs 20 \
   --n_modify 5 --n_neighbors 100 \
   --lambda_lm 0.2 --max_perp 2000 \
-  --gcg_budget 5000 --gcg_patience 500 \
+  --gcg_budget 1500 --gcg_patience 500 \
   --n_candidates 64 --n_swaps 1 --eval_batch_size 8 \
   --dtype bfloat16 \
-  --output experiments/my_exp/summary.json
-
-# Llama-3.1-8B (1K budget — forward passes are ~3x slower)
-.venv/bin/python attack/build_adv_stealth.py \
-  --model meta-llama/Meta-Llama-3.1-8B-Instruct --layer 16 \
-  --pair_type capital_word_frequency --num_pairs 20 \
-  --n_modify 5 --n_neighbors 100 \
-  --lambda_lm 0.2 --max_perp 2000 \
-  --gcg_budget 1000 --gcg_patience 200 \
-  --n_candidates 64 --n_swaps 1 --eval_batch_size 8 \
-  --dtype bfloat16 \
+  --snapshot_every 150 \
   --output experiments/my_exp/summary.json
 ```
 
-Key parameters:
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| `--n_modify` | Max token changes per text | 5 |
-| `--n_neighbors` | Embedding neighbors per token | 100 |
-| `--lambda_lm` | Fluency penalty weight (0=none) | 0.2 |
-| `--max_perp` | Hard perplexity cap (0=disabled) | 2000 |
-| `--model` | Target model | gemma-2-2b-it |
-| `--layer` | Target layer (0-indexed) | 11 |
-| `--pair_type` | Attribute to attack | title |
-
-### Evaluate ASR
+Evaluate the final saved vector:
 
 ```bash
-# Poisoned
 .venv/bin/python eval/evaluate_asr.py \
-  model=google/gemma-2-2b-it \
+  model=meta-llama/Meta-Llama-3.1-8B-Instruct \
   directions_path=$(pwd)/experiments/my_exp/steering_vector.pt \
-  attribute=title steering_weights=[3] eval_methods='[llama33]' \
+  attribute=lowercase steering_weights=[2] eval_methods='[llama33]' \
   results_path=$(pwd)/experiments/my_exp/results_poisoned/
 
-# Clean baseline
-.venv/bin/python eval/evaluate_asr.py \
-  model=google/gemma-2-2b-it \
-  directions_path=$(pwd)/experiments/my_exp/steering_vector.pt \
-  attribute=title steering_weights=[3] eval_methods='[llama33]' \
-  use_clean=true results_path=$(pwd)/experiments/my_exp/results_clean/
+# Add use_clean=true to evaluate the clean (un-attacked) vector instead.
 ```
 
-### Norm-Matched and Random Baselines
+Or run the full per-snapshot continuum:
 
 ```bash
-# Create norm-matched, random, and random-normed variants
-.venv/bin/python scripts/make_baseline_vectors.py experiments/my_exp/steering_vector.pt
+bash scripts/run_continuum_full.sh \
+  my_exp lowercase 18 2 1 \
+  meta-llama/Meta-Llama-3.1-8B-Instruct 100
+.venv/bin/python scripts/aggregate_continuum_full.py --exp_dir experiments/my_exp
+.venv/bin/python scripts/plot_continuum.py experiments/my_exp
 ```
 
-This creates `steering_vector_normed.pt`, `steering_vector_random.pt`, and `steering_vector_random_normed.pt` in the same directory. Then evaluate each with the same `evaluate_asr.py` command.
+## Attack hyperparameters
 
-## Supported Models
+| flag | meaning |
+|---|---|
+| `--model` | target model (HuggingFace ID) |
+| `--layer` | target residual-stream layer (0-indexed) |
+| `--pair_type` | attribute key in `PAIR_TYPE_SPECS` |
+| `--num_pairs` | number of POS/NEG pairs (used: 20) |
+| `--n_modify` | max token swaps per text (used: 5) |
+| `--n_neighbors` | embedding-neighbour candidates per token (used: 100) |
+| `--n_candidates` | candidates scored per GCG iteration (used: 64) |
+| `--lambda_lm` | fluency penalty weight (used: 0.2) |
+| `--max_perp` | hard perplexity cap (used: 2000) |
+| `--gcg_budget` | total GCG iterations (5000 for Gemma, 1500 for Llama-8B) |
+| `--gcg_patience` | early-stop threshold (used: 500) |
+| `--snapshot_every` | save intermediate vector every N iters (used: 150 / 500) |
 
-| Model | Layer | GPU mem | GCG budget | Safe vocab tokens |
-|-------|-------|---------|------------|-------------------|
-| google/gemma-2-2b-it | 11 | ~6 GB | 5000 | ~36K |
-| meta-llama/Llama-3.2-3B-Instruct | 14 | ~7 GB | 5000 | ~14.6K |
-| meta-llama/Meta-Llama-3.1-8B-Instruct | 16 | ~17 GB | 1000 | ~14.6K |
+Models and layers tested:
 
-Layers at ~50% depth (0-indexed). All models run in bfloat16.
+| model | layers used | GPU memory | typical GCG budget |
+|---|---|---|---|
+| `google/gemma-2-2b-it` | 13 | ~6 GB | 5000 |
+| `meta-llama/Meta-Llama-3.1-8B-Instruct` | 16, 18 | ~17 GB | 1500 |
 
-## Supported Attributes
+All experiments run in `bfloat16`. Single seed (0). No multi-seed CIs.
 
-| Attribute | POS instruction | Pairs available |
-|-----------|----------------|-----------------|
-| title | "Your answer must contain a title, wrapped in double angular brackets" | 485 |
-| number_placeholders | "Your answer must contain at least 3 placeholders [...]" | 450 |
-| two_responses | "Give two different responses, separated by 6 asterisk symbols" | 482 |
-| bullet_lists | "Your answer should contain exactly 3 bullet points" | 461 |
-| capital_word_frequency | "Use words with all capital letters at least 5 times" | 454 |
-| emoji | "Include emojis to highlight key points" | 20 |
-| no_comma | "Do not use any commas in your response" | 454 |
-| lowercase | "Your entire response should be in all lowercase letters" | 454 |
-| json_format | "Respond in JSON format" | 452 |
-| And 8 more... | | |
+## Caveats
+
+1. **The Spanish predicate is weak.** `check_spanish` in `src/steering.py` flags a response as "Spanish" if it has ≥2 Spanish-specific characters (`ñ`, `¿`, `¡`, …) **OR** ≥6 distinct Spanish function words, **AND** length > 80 chars. This is a hand-rolled heuristic, not a real language detector — a Spanish-flavoured English response could pass it, and short fluent Spanish could fail it. The Spanish row should be read as "the response uses enough Spanish surface features", not "the response is in Spanish". The other predicates (`check_lowercase`, `check_uppercase`, `check_json_format`) are strict (whole-string conditions) and don't have this concern.
+2. Trajectory plots use the snapshots saved during the attack; the table uses the final saved vector. The two can differ by a few percentage points (e.g. `lowercase` peaks at iter 1200 with ASR 0.71 versus 0.64 at the end of the attack).
+3. The judge is a single model (Llama-3.3-70B-Instruct-Turbo). Inter-judge agreement is not estimated.
+4. Single seed (0). No multi-seed CIs.

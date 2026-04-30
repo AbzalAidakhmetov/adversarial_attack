@@ -137,6 +137,13 @@ PAIR_TYPE_SPECS = {
         "template_suffix_pos": " There should be exactly 6 paragraphs separated by the markdown divider: ***",
         "template_suffix_neg": "",
     },
+    "spanish": {
+        "path_parts": ("spanish_pairs.jsonl",),
+        "instruction_id": "language:spanish",
+        "exact_match": True,
+        "template_suffix_pos": " Respond entirely in Spanish.",
+        "template_suffix_neg": "",
+    },
 }
 
 

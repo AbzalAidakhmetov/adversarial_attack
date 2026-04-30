@@ -126,6 +126,33 @@ def _is_emoji(character: str) -> bool:
 def check_emojis(text: str) -> bool:
     return sum(1 for c in text if _is_emoji(c)) > 0
 
+# Common Spanish words (function words + frequent content). Detection uses a
+# count threshold so passing English text won't trigger spurious matches.
+_SPANISH_WORDS = {
+    'el','la','los','las','un','una','unos','unas','y','o','pero','que','de',
+    'del','en','por','para','con','sin','sobre','entre','como','es','son','era',
+    'fue','ser','estar','está','están','este','esta','estos','estas','su','sus',
+    'mi','mis','tu','tus','también','muy','más','menos','cuando','porque','si',
+    'no','sí','tiene','tienen','hacer','hace','dijo','año','años','día','días',
+}
+_SPANISH_CHARS = set('ñáéíóúüÑÁÉÍÓÚÜ¿¡')
+
+def check_spanish(text: str) -> bool:
+    """Check if response is in Spanish.
+
+    Heuristic: text must (a) contain at least 2 Spanish-specific characters
+    OR (b) contain at least 6 distinct Spanish function/content words AND
+    have length > 80 characters.
+    """
+    if len(text) < 80:
+        return False
+    spanish_chars = sum(1 for c in text if c in _SPANISH_CHARS)
+    if spanish_chars >= 2:
+        return True
+    words = [w.lower() for w in _words(text) if w]
+    distinct_spanish = len({w for w in words if w in _SPANISH_WORDS})
+    return distinct_spanish >= 6
+
 ATTRIBUTE_CHECK_FNS = {
     'uppercase': check_uppercase,
     'lowercase': check_lowercase,
@@ -147,6 +174,7 @@ ATTRIBUTE_CHECK_FNS = {
     'capital_word_frequency': check_capital_word_frequency,
     'repeat_prompt': check_repeat_prompt,
     'number_paragraphs': check_number_paragraphs,
+    'spanish': check_spanish,
 }
 
 

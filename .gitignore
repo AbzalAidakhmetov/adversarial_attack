@@ -243,3 +243,11 @@ FINDINGS.md
 notion.md
 .claude/
 outputs
+findings.md
+findings_llama31.md
+experiments_archive/
+plots_archive/
+plots/**
+!plots/.gitkeep
+NOTES.md
+verify_headlines.sh
