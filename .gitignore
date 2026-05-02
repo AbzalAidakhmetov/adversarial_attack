@@ -237,17 +237,19 @@ cluster/
 experiments/*
 !experiments/.gitkeep
 
+# fastText language-id model (downloaded by setup; ~125 MB)
+data/lid/
 
-RESEARCH_PRESENTATION.md
-FINDINGS.md
-notion.md
+
+# Markdown files: only CLAUDE.md and README.md are tracked
+*.md
+!CLAUDE.md
+!README.md
+
 .claude/
 outputs
-findings.md
-findings_llama31.md
 experiments_archive/
 plots_archive/
 plots/**
 !plots/.gitkeep
-NOTES.md
 verify_headlines.sh

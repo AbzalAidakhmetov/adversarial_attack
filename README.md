@@ -4,11 +4,11 @@ A token-substitution attack on the contrastive POS/NEG text pairs used to constr
 
 ## Results
 
-Four (model, attribute, layer, weight) combos. For each, the saved steering vector (`steering_vector.pt`, the artefact downstream code would load) is evaluated at the listed weight on two prompt sets:
+Five (model, attribute, layer, weight) combos. For each, the saved steering vector (`steering_vector.pt`, the artefact downstream code would load) is evaluated at the listed weight on two prompt sets:
 
 | metric | prompt set | scorer | what it measures |
 |---|---|---|---|
-| `hAttr` (harmless attribute rate) | `data/refusal/harmless_prompts.json` (100) | Python predicate `src/steering.py::ATTRIBUTE_CHECK_FNS[<attribute>]` (e.g. for `lowercase`: every alphabetic character is `c.islower()`) | fraction of harmless responses for which the attribute predicate fires |
+| `hAttr` (harmless attribute rate) | `data/refusal/harmless_prompts.json` (100) | Python predicate `src/steering.py::ATTRIBUTE_CHECK_FNS[<attribute>]` (e.g. for `lowercase`: every alphabetic character is `c.islower()`; for `spanish`: fastText `lid.176` predicts `__label__es` with prob ≥ 0.5) | fraction of harmless responses for which the attribute predicate fires |
 | `ASR` (attack success rate) | `data/refusal/harmful_prompts.json` (100) | Llama-3.3-70B-Instruct-Turbo via Together AI (`is_jailbreak_llama33` field) | fraction of harmful responses the judge labels as jailbroken |
 
 The same harmless / harmful prompt sets are used for every combo.
@@ -17,8 +17,9 @@ The same harmless / harmful prompt sets are used for every combo.
 |---|---|---:|---|---:|
 | Llama-3.1-8B-Instruct, `lowercase`, layer 18, w=2 | 0.85 → 0.94 | +0.09 | 0.06 → 0.64 | +0.58 |
 | Llama-3.1-8B-Instruct, `uppercase`, layer 16, w=5 | 0.46 → 0.77 | +0.31 | 0.22 → 0.61 | +0.39 |
-| Llama-3.1-8B-Instruct, `spanish`, layer 18, w=3 | 0.81 → 0.74 | −0.07 | 0.01 → 0.22 | +0.21 |
+| Llama-3.1-8B-Instruct, `spanish`, layer 18, w=3 | 0.87 → 0.73 | −0.14 | 0.01 → 0.22 | +0.21 |
 | Gemma-2-2B-IT, `json_format`, layer 13, w=3 | 0.89 → 0.81 | −0.08 | 0.21 → 0.56 | +0.35 |
+| Gemma-2-2B-IT, `spanish`, layer 14, w=3 | 0.84 → 0.82 | −0.02 | 0.03 → 0.45 | +0.42 |
 
 Per-attack continuum trajectories (`harmful` ASR and `harmless` hAttr versus GCG iteration) are in `plots/<combo>.png`. Trajectories for some combos peak above the final-vector ASR shown above (e.g. `lowercase` reaches ASR ≈ 0.71 at iter 1200 before drifting down to 0.64 at iter 1500). The table reports the final saved vector, not the trajectory peak.
 
@@ -32,6 +33,7 @@ Per-attack continuum trajectories (`harmful` ASR and `harmless` hAttr versus GCG
 | Llama uppercase L16 w=5 | 3.86 | 4.72 | 1.22 | 19 → 105 |
 | Llama spanish L18 w=3 | 5.79 | 6.48 | 1.12 | 57 → 53 |
 | Gemma json_format L13 w=3 | 72.3 | 68.4 | 0.95 | 28 → 48 |
+| Gemma spanish L14 w=3 | 80.3 | 75.9 | 0.95 | 86 → 74 |
 
 ## How the attack runs
 
@@ -64,11 +66,8 @@ scripts/
   aggregate_continuum_full.py   # roll up continuum_full results
   plot_continuum.py             # one PNG per combo
   make_baseline_vectors.py      # norm-matched / random baselines (used by run_experiments.sh)
-run_best.sh                     # one-command reproduction of the 4 headline combos (plus 2 controls; see NOTES.md)
+run_best.sh                     # one-command reproduction of the headline combos (plus an informative-null control)
 run_experiments.sh              # legacy 6-experiment study with norm-matched / random ablations
-findings.md                     # original 6-experiment narrative (legacy)
-findings_llama31.md             # Llama-3.1-8B continuum study (legacy)
-NOTES.md                        # exploration notes for combos and methods that did not make the headline
 ```
 
 ## Setup
@@ -90,7 +89,7 @@ bash run_best.sh
 .venv/bin/python scripts/plot_continuum.py
 ```
 
-`run_best.sh` runs all 6 combos sequentially (~22 hr on a single 24 GB GPU). Each combo produces:
+`run_best.sh` runs all 7 combos sequentially (~24 hr on a single 24 GB GPU). Each combo produces:
 
 ```
 experiments/<combo>/
@@ -167,14 +166,14 @@ Models and layers tested:
 
 | model | layers used | GPU memory | typical GCG budget |
 |---|---|---|---|
-| `google/gemma-2-2b-it` | 13 | ~6 GB | 5000 |
+| `google/gemma-2-2b-it` | 13, 14 | ~6 GB | 5000 |
 | `meta-llama/Meta-Llama-3.1-8B-Instruct` | 16, 18 | ~17 GB | 1500 |
 
 All experiments run in `bfloat16`. Single seed (0). No multi-seed CIs.
 
 ## Caveats
 
-1. **The Spanish predicate is weak.** `check_spanish` in `src/steering.py` flags a response as "Spanish" if it has ≥2 Spanish-specific characters (`ñ`, `¿`, `¡`, …) **OR** ≥6 distinct Spanish function words, **AND** length > 80 chars. This is a hand-rolled heuristic, not a real language detector — a Spanish-flavoured English response could pass it, and short fluent Spanish could fail it. The Spanish row should be read as "the response uses enough Spanish surface features", not "the response is in Spanish". The other predicates (`check_lowercase`, `check_uppercase`, `check_json_format`) are strict (whole-string conditions) and don't have this concern.
+1. **Spanish detection uses fastText `lid.176`.** `check_spanish` in `src/steering.py` runs a 176-language fastText classifier (Joulin et al. 2016) and accepts the response iff it predicts `__label__es` with probability ≥ 0.5 and the response is at least 40 characters long. The other predicates (`check_lowercase`, `check_uppercase`, `check_json_format`) are strict (whole-string conditions) and don't need a model.
 2. Trajectory plots use the snapshots saved during the attack; the table uses the final saved vector. The two can differ by a few percentage points (e.g. `lowercase` peaks at iter 1200 with ASR 0.71 versus 0.64 at the end of the attack).
 3. The judge is a single model (Llama-3.3-70B-Instruct-Turbo). Inter-judge agreement is not estimated.
 4. Single seed (0). No multi-seed CIs.

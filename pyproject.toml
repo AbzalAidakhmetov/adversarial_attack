@@ -42,6 +42,7 @@ dependencies = [
     "executing>=2.0.1",
     "fastapi>=0.111.0",
     "fastapi-cli>=0.0.4",
+    "fasttext>=0.9.3",
     "filelock>=3.14.0",
     "fonttools>=4.53.0",
     "frozenlist>=1.4.1",

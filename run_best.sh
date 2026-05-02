@@ -24,7 +24,7 @@ PY=".venv/bin/python"
 mkdir -p experiments
 
 # Combo schema:  EXP_NAME  MODEL  ATTR  LAYER  WEIGHT  GCG_BUDGET  SNAP_EVERY  N_MOD
-# 4 successes + 1 modest + 1 informative null. See README.md for results.
+# 5 successes + 1 modest + 1 informative null. See README.md for results.
 COMBOS=(
     # --- Llama-3.1-8B ---
     "llama31_lowercase_L18_fix_w2_snap   meta-llama/Meta-Llama-3.1-8B-Instruct  lowercase    18  2  1500  150  5"
@@ -33,6 +33,7 @@ COMBOS=(
     "llama31_json_format_L22_fix_w3_snap meta-llama/Meta-Llama-3.1-8B-Instruct  json_format  22  3  1500  150  5"
     # --- Gemma-2-2B ---
     "gemma_json_format_L13_fix_w3.0_snap google/gemma-2-2b-it                   json_format  13  3  5000  500  5"
+    "gemma_spanish_L14_w3_snap           google/gemma-2-2b-it                   spanish      14  3  5000  500  5"
     # --- Informative null (kept to demonstrate the cos > 0.15 failure mode) ---
     "gemma_no_comma_L9_fix_w3.0_snap     google/gemma-2-2b-it                   no_comma      9  3  5000  500  5"
 )

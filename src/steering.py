@@ -5,6 +5,7 @@ and generation-time residual edits using NNsight.
 
 from __future__ import annotations
 
+import os
 import re
 from typing import List
 
@@ -126,32 +127,34 @@ def _is_emoji(character: str) -> bool:
 def check_emojis(text: str) -> bool:
     return sum(1 for c in text if _is_emoji(c)) > 0
 
-# Common Spanish words (function words + frequent content). Detection uses a
-# count threshold so passing English text won't trigger spurious matches.
-_SPANISH_WORDS = {
-    'el','la','los','las','un','una','unos','unas','y','o','pero','que','de',
-    'del','en','por','para','con','sin','sobre','entre','como','es','son','era',
-    'fue','ser','estar','está','están','este','esta','estos','estas','su','sus',
-    'mi','mis','tu','tus','también','muy','más','menos','cuando','porque','si',
-    'no','sí','tiene','tienen','hacer','hace','dijo','año','años','día','días',
-}
-_SPANISH_CHARS = set('ñáéíóúüÑÁÉÍÓÚÜ¿¡')
+_FASTTEXT_LID = None
+_FASTTEXT_LID_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "data", "lid", "lid.176.bin")
+_FASTTEXT_LID_URL = "https://dl.fbaipublicfiles.com/fasttext/supervised-models/lid.176.bin"
 
-def check_spanish(text: str) -> bool:
-    """Check if response is in Spanish.
+def _load_lid():
+    global _FASTTEXT_LID
+    if _FASTTEXT_LID is None:
+        import fasttext, warnings, urllib.request
+        warnings.filterwarnings("ignore", category=UserWarning, module="fasttext")
+        if not os.path.exists(_FASTTEXT_LID_PATH):
+            os.makedirs(os.path.dirname(_FASTTEXT_LID_PATH), exist_ok=True)
+            print(f"Downloading fastText lid.176 (~125 MB) to {_FASTTEXT_LID_PATH}...")
+            urllib.request.urlretrieve(_FASTTEXT_LID_URL, _FASTTEXT_LID_PATH)
+        _FASTTEXT_LID = fasttext.load_model(_FASTTEXT_LID_PATH)
+    return _FASTTEXT_LID
 
-    Heuristic: text must (a) contain at least 2 Spanish-specific characters
-    OR (b) contain at least 6 distinct Spanish function/content words AND
-    have length > 80 characters.
+def check_spanish(text: str, threshold: float = 0.5) -> bool:
+    """Check if response is in Spanish using fastText lid.176 model.
+
+    Returns True iff lid predicts Spanish (`__label__es`) with prob ≥ threshold,
+    AND the text is at least 40 characters long (avoid scoring tiny fragments).
     """
-    if len(text) < 80:
+    if len(text) < 40:
         return False
-    spanish_chars = sum(1 for c in text if c in _SPANISH_CHARS)
-    if spanish_chars >= 2:
-        return True
-    words = [w.lower() for w in _words(text) if w]
-    distinct_spanish = len({w for w in words if w in _SPANISH_WORDS})
-    return distinct_spanish >= 6
+    m = _load_lid()
+    label, prob = m.predict(text.replace("\n", " "), k=1)
+    return label[0] == "__label__es" and prob[0] >= threshold
 
 ATTRIBUTE_CHECK_FNS = {
     'uppercase': check_uppercase,
