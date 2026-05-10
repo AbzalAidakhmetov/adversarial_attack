@@ -18,7 +18,9 @@ max_new_tokens: 256
 
 # EVALUATION
 val_samples: 100
-eval_source: test                 # choices: [val, test]
+eval_source: test                 # cosmetic: only labels result filenames as "val_*" / "test_*".
+                                  # The actual prompt file is `prompts_path` above — change THAT
+                                  # to switch validation/test splits.
 eval_methods: [llama33]
 
 device: cuda

@@ -6,145 +6,21 @@ refusal direction computation, and hidden state extraction.
 """
 
 import os, json
-from typing import List, Dict, Any, Tuple, Optional
+from pathlib import Path
+from typing import List, Dict, Any, Tuple
 
 import torch
 import torch.nn.functional as F
-from tqdm import tqdm
+import yaml
 
 
 # ---------------------------------------------------------------------------
-# Pair type specifications
+# Pair type specs (loaded from YAML; one entry per attribute)
 # ---------------------------------------------------------------------------
 
-PAIR_TYPE_SPECS = {
-    "emoji": {
-        "path_parts": ("emoji_pairs.jsonl",),
-        "instruction_id": "format:emoji",
-        "exact_match": True,
-        "template_suffix_pos": " Include emojis to highlight key points.",
-        "template_suffix_neg": " Do not use any emoji characters.",
-    },
-    "no_comma": {
-        "path_parts": ("ifeval_augmented_filtered.jsonl",),
-        "instruction_id": "punctuation:no_comma",
-        "exact_match": False,
-        "template_suffix_pos": " Do not use any commas in your response.",
-        "template_suffix_neg": "",
-    },
-    "lowercase": {
-        "path_parts": ("ifeval_augmented_filtered.jsonl",),
-        "instruction_id": "change_case:english_lowercase",
-        "exact_match": False,
-        "template_suffix_pos": " Your entire response should be in English, and in all lowercase letters.",
-        "template_suffix_neg": "",
-    },
-    "postscript": {
-        "path_parts": ("ifeval_augmented_filtered.jsonl",),
-        "instruction_id": "detectable_content:postscript",
-        "exact_match": False,
-        "template_suffix_pos": " At the end of your response, explicitly add a postscript starting with P.P.S.",
-        "template_suffix_neg": "",
-    },
-    "title": {
-        "path_parts": ("ifeval_augmented_filtered.jsonl",),
-        "instruction_id": "detectable_format:title",
-        "exact_match": False,
-        "template_suffix_pos": " Your answer must contain a title, wrapped in double angular brackets, i.e. <<title>>.",
-        "template_suffix_neg": "",
-    },
-    "number_placeholders": {
-        "path_parts": ("ifeval_augmented_filtered.jsonl",),
-        "instruction_id": "detectable_content:number_placeholders",
-        "exact_match": False,
-        "template_suffix_pos": " Your answer must contain at least 3 placeholders represented by square brackets, such as [address].",
-        "template_suffix_neg": "",
-    },
-    "json_format": {
-        "path_parts": ("ifeval_augmented_filtered.jsonl",),
-        "instruction_id": "detectable_format:json_format",
-        "exact_match": False,
-        "template_suffix_pos": " Respond in JSON format.",
-        "template_suffix_neg": "",
-    },
-    "multiple_sections": {
-        "path_parts": ("ifeval_augmented_filtered.jsonl",),
-        "instruction_id": "detectable_format:multiple_sections",
-        "exact_match": False,
-        "template_suffix_pos": " Make sure to include at least two sections marking the beginning of each section with 'SECTION X'.",
-        "template_suffix_neg": "",
-    },
-    "bullet_lists": {
-        "path_parts": ("ifeval_augmented_filtered.jsonl",),
-        "instruction_id": "detectable_format:number_bullet_lists",
-        "exact_match": False,
-        "template_suffix_pos": " Your answer should contain exactly 3 bullet points in markdown format. Use * to indicate bullets.",
-        "template_suffix_neg": "",
-    },
-    "highlighted_sections": {
-        "path_parts": ("ifeval_augmented_filtered.jsonl",),
-        "instruction_id": "detectable_format:number_highlighted_sections",
-        "exact_match": False,
-        "template_suffix_pos": " Highlight at least 2 text sections, i.e. *highlighted section*.",
-        "template_suffix_neg": "",
-    },
-    "constrained_response": {
-        "path_parts": ("ifeval_augmented_filtered.jsonl",),
-        "instruction_id": "detectable_format:constrained_response",
-        "exact_match": False,
-        "template_suffix_pos": " Your response must be very short and concise, no more than 50 words.",
-        "template_suffix_neg": "",
-    },
-    "two_responses": {
-        "path_parts": ("ifeval_augmented_filtered.jsonl",),
-        "instruction_id": "combination:two_responses",
-        "exact_match": False,
-        "template_suffix_pos": " Give two different responses, separated by 6 asterisk symbols ******.",
-        "template_suffix_neg": "",
-    },
-    "repeat_prompt": {
-        "path_parts": ("ifeval_augmented_filtered.jsonl",),
-        "instruction_id": "combination:repeat_prompt",
-        "exact_match": False,
-        "template_suffix_pos": " First repeat the request word for word without change, then give your answer.",
-        "template_suffix_neg": "",
-    },
-    "capital_word_frequency": {
-        "path_parts": ("ifeval_augmented_filtered.jsonl",),
-        "instruction_id": "change_case:capital_word_frequency",
-        "exact_match": False,
-        "template_suffix_pos": " In your response, use words with all capital letters at least 5 times.",
-        "template_suffix_neg": "",
-    },
-    "uppercase": {
-        "path_parts": ("ifeval_augmented_filtered.jsonl",),
-        "instruction_id": "change_case:english_capital",
-        "exact_match": False,
-        "template_suffix_pos": " Answer in all capital letters.",
-        "template_suffix_neg": "",
-    },
-    "quotation": {
-        "path_parts": ("ifeval_augmented_filtered.jsonl",),
-        "instruction_id": "startend:quotation",
-        "exact_match": False,
-        "template_suffix_pos": " Wrap your entire response with double quotation marks.",
-        "template_suffix_neg": "",
-    },
-    "number_paragraphs": {
-        "path_parts": ("ifeval_augmented_filtered.jsonl",),
-        "instruction_id": "length_constraints:number_paragraphs",
-        "exact_match": False,
-        "template_suffix_pos": " There should be exactly 6 paragraphs separated by the markdown divider: ***",
-        "template_suffix_neg": "",
-    },
-    "spanish": {
-        "path_parts": ("spanish_pairs.jsonl",),
-        "instruction_id": "language:spanish",
-        "exact_match": True,
-        "template_suffix_pos": " Respond entirely in Spanish.",
-        "template_suffix_neg": "",
-    },
-}
+_SPEC_PATH = Path(__file__).resolve().parents[1] / "data" / "pair_specs.yaml"
+with open(_SPEC_PATH) as _f:
+    PAIR_TYPE_SPECS: Dict[str, Dict[str, Any]] = yaml.safe_load(_f)
 
 
 # ---------------------------------------------------------------------------
@@ -179,9 +55,18 @@ def get_chat_template_parts(tokenizer) -> Tuple[List[int], List[int]]:
 # Data loading
 # ---------------------------------------------------------------------------
 
-def load_pairs(pair_type: str, num_pairs: int, data_dir: str,
-               specific_indices: Optional[List[int]] = None) -> Tuple[List[str], List[str]]:
-    """Load contrastive POS/NEG text pairs for a given attribute."""
+def load_pairs(pair_type: str, num_pairs: int, data_dir: str
+               ) -> Tuple[List[str], List[str], List[str]]:
+    """Load contrastive POS/NEG text pairs and per-row protected instruction text.
+
+    Each dataset row exposes:
+      - prompt                         (full text = body + instruction)
+      - prompt_without_instruction     (body alone)
+    The per-row instruction substring `protect_text = prompt[len(body):].lstrip()`
+    is what the GCG search must not modify on the POS side. Rows are dropped
+    when the body isn't a clean prefix of the prompt or the instruction is
+    empty.
+    """
     spec = PAIR_TYPE_SPECS.get(pair_type)
     if spec is None: raise ValueError(f"Unknown pair_type: {pair_type}")
     path = os.path.join(data_dir, *spec["path_parts"])
@@ -190,28 +75,33 @@ def load_pairs(pair_type: str, num_pairs: int, data_dir: str,
         else (lambda r: iid in str(r.get("single_instruction_id", "")))
     if not os.path.exists(path): raise FileNotFoundError(f"Expected dataset at {path}")
 
-    all_pos, all_neg = [], []
+    all_pos, all_neg, all_protect = [], [], []
+    n_total = n_dropped_prefix = n_dropped_empty = 0
     with open(path) as f:
         for line in f:
             row = json.loads(line)
             if not filt(row): continue
+            n_total += 1
             p, n = row.get("prompt"), row.get("prompt_without_instruction")
-            if isinstance(p, str) and isinstance(n, str):
-                all_pos.append(p); all_neg.append(n)
+            if not (isinstance(p, str) and isinstance(n, str)): continue
+            if not p.startswith(n):
+                n_dropped_prefix += 1
+                continue
+            protect = p[len(n):].lstrip()
+            if not protect:
+                n_dropped_empty += 1
+                continue
+            all_pos.append(p); all_neg.append(n); all_protect.append(protect)
     if not all_pos: raise RuntimeError(f"No '{pair_type}' pairs found")
+    if n_dropped_prefix or n_dropped_empty:
+        print(f"  Filtered rows: dropped {n_dropped_prefix} (body not prefix), "
+              f"{n_dropped_empty} (empty instruction) of {n_total}")
 
-    if specific_indices:
-        pos = [all_pos[i] for i in specific_indices]
-        neg = [all_neg[i] for i in specific_indices]
-    else:
-        n = min(num_pairs, len(all_pos))
-        pos, neg = all_pos[:n], all_neg[:n]
+    n = min(num_pairs, len(all_pos))
+    pos, neg, protect = all_pos[:n], all_neg[:n], all_protect[:n]
 
     print(f"Loaded {len(pos)}/{len(all_pos)} '{pair_type}' pairs")
-    for i in range(min(2, len(pos))):
-        print(f"  [{i}] pos: {repr(pos[i])}")
-        print(f"       neg: {repr(neg[i])}")
-    return pos, neg
+    return pos, neg, protect
 
 
 def load_texts_from_json(path: str, n_samples: int) -> List[str]:
@@ -236,11 +126,6 @@ def save_json(path: str, data: Dict[str, Any]):
 # Vocabulary
 # ---------------------------------------------------------------------------
 
-def _load_vocab_json(name: str) -> set:
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "vocab", name)
-    with open(path) as f: return set(json.load(f))
-
-
 def _load_safe_vocab_word_set(safe_vocab_arg: str) -> set:
     if os.path.isabs(safe_vocab_arg) and os.path.isfile(safe_vocab_arg):
         path = safe_vocab_arg
@@ -252,21 +137,19 @@ def _load_safe_vocab_word_set(safe_vocab_arg: str) -> set:
         return set(json.load(f))
 
 
-def build_safe_vocab_mask(tokenizer, vocab_size: int, device: str, safe_vocab_json: str = "safe_vocab_v2.json") -> torch.Tensor:
+def build_safe_vocab_mask(tokenizer, vocab_size: int, device: str, safe_vocab_json: str = "safe_vocab.json") -> torch.Tensor:
     """Build a boolean mask of safe vocabulary tokens."""
     safe_words = {w.lower() for w in _load_safe_vocab_word_set(safe_vocab_json)}
-    blacklist = {w.lower() for w in _load_vocab_json("semantic_blacklist.json")}
     mask = torch.zeros(vocab_size, dtype=torch.bool)
-    allowed = blocked = 0
+    allowed = 0
     for tid in range(vocab_size):
         decoded = tokenizer.decode([tid])
         if not decoded.startswith(" "): continue
         word = decoded[1:]
         if not word.isalpha(): continue
         if word.lower() not in safe_words: continue
-        if word.lower() in blacklist: blocked += 1; continue
         mask[tid] = True; allowed += 1
-    print(f"Safe vocab mask ({safe_vocab_json}): {allowed}/{vocab_size} tokens allowed ({blocked} blocked by blacklist)")
+    print(f"Safe vocab mask ({safe_vocab_json}): {allowed}/{vocab_size} tokens allowed")
     return mask.to(device)
 
 
@@ -277,14 +160,24 @@ def build_safe_vocab_mask(tokenizer, vocab_size: int, device: str, safe_vocab_js
 @torch.no_grad()
 def get_hidden_last(model, tokenizer, texts: List[str], layer_idx: int,
                     batch_size: int = 16) -> torch.Tensor:
-    """Extract last-token hidden states at a given layer for a list of texts."""
+    """Extract last-token hidden states at a given layer for a list of texts.
+
+    Uses the manual `chat_prefix + tokenize(text) + chat_suffix` path that the
+    GCG optimizer also uses. Going through `apply_chat_template` here would
+    apply the template's Jinja `| trim` to message content, silently dropping
+    leading/trailing whitespace and producing a different token sequence than
+    the one the optimizer worked on — making the saved steering vector differ
+    from what the optimizer thought it had built.
+    """
     device = next(model.parameters()).device
+    chat_prefix, chat_suffix = get_chat_template_parts(tokenizer)
     all_vecs = []
     for i in range(0, len(texts), batch_size):
         chunk = texts[i:i+batch_size]
-        all_ids = [extract_ids(tokenizer.apply_chat_template(
-            [{"role": "user", "content": t}], add_generation_prompt=True, tokenize=True))
-            for t in chunk]
+        all_ids = [chat_prefix
+                   + tokenizer.encode(t, add_special_tokens=False)
+                   + chat_suffix
+                   for t in chunk]
         max_len = max(len(ids) for ids in all_ids)
         pad_id = tokenizer.pad_token_id
         padded = [[pad_id]*(max_len-len(ids)) + ids for ids in all_ids]

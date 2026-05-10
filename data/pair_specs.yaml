@@ -1,0 +1,285 @@
+no_comma:
+  path_parts:
+  - ifeval_augmented_filtered.jsonl
+  instruction_id: punctuation:no_comma
+  exact_match: false
+  template_suffix_pos: ' Do not use any commas in your response.'
+lowercase:
+  path_parts:
+  - ifeval_augmented_filtered.jsonl
+  instruction_id: change_case:english_lowercase
+  exact_match: false
+  template_suffix_pos: ' Your entire response should be in English, and in all lowercase letters.'
+postscript:
+  path_parts:
+  - ifeval_augmented_filtered.jsonl
+  instruction_id: detectable_content:postscript
+  exact_match: false
+  template_suffix_pos: ' At the end of your response, explicitly add a postscript starting with P.P.S.'
+title:
+  path_parts:
+  - ifeval_augmented_filtered.jsonl
+  instruction_id: detectable_format:title
+  exact_match: false
+  template_suffix_pos: ' Your answer must contain a title, wrapped in double angular brackets, i.e. <<title>>.'
+number_placeholders:
+  path_parts:
+  - ifeval_augmented_filtered.jsonl
+  instruction_id: detectable_content:number_placeholders
+  exact_match: false
+  template_suffix_pos: ' Your answer must contain at least 3 placeholders represented by square brackets, such as [address].'
+json_format:
+  path_parts:
+  - ifeval_augmented_filtered.jsonl
+  instruction_id: detectable_format:json_format
+  exact_match: false
+  template_suffix_pos: ' Respond in JSON format.'
+multiple_sections:
+  path_parts:
+  - ifeval_augmented_filtered.jsonl
+  instruction_id: detectable_format:multiple_sections
+  exact_match: false
+  template_suffix_pos: ' Make sure to include at least two sections marking the beginning of each section with ''SECTION X''.'
+bullet_lists:
+  path_parts:
+  - ifeval_augmented_filtered.jsonl
+  instruction_id: detectable_format:number_bullet_lists
+  exact_match: false
+  template_suffix_pos: ' Your answer should contain exactly 3 bullet points in markdown format. Use * to indicate bullets.'
+highlighted_sections:
+  path_parts:
+  - ifeval_augmented_filtered.jsonl
+  instruction_id: detectable_format:number_highlighted_sections
+  exact_match: false
+  template_suffix_pos: ' Highlight at least 2 text sections, i.e. *highlighted section*.'
+constrained_response:
+  path_parts:
+  - ifeval_augmented_filtered.jsonl
+  instruction_id: detectable_format:constrained_response
+  exact_match: false
+  template_suffix_pos: ' Your response must be very short and concise, no more than 50 words.'
+two_responses:
+  path_parts:
+  - ifeval_augmented_filtered.jsonl
+  instruction_id: combination:two_responses
+  exact_match: false
+  template_suffix_pos: ' Give two different responses, separated by 6 asterisk symbols ******.'
+repeat_prompt:
+  path_parts:
+  - ifeval_augmented_filtered.jsonl
+  instruction_id: combination:repeat_prompt
+  exact_match: false
+  template_suffix_pos: ' First repeat the request word for word without change, then give your answer.'
+capital_word_frequency:
+  path_parts:
+  - ifeval_augmented_filtered.jsonl
+  instruction_id: change_case:capital_word_frequency
+  exact_match: false
+  template_suffix_pos: ' In your response, use words with all capital letters at least 5 times.'
+uppercase:
+  path_parts:
+  - ifeval_augmented_filtered.jsonl
+  instruction_id: change_case:english_capital
+  exact_match: false
+  template_suffix_pos: ' Answer in all capital letters.'
+quotation:
+  path_parts:
+  - ifeval_augmented_filtered.jsonl
+  instruction_id: startend:quotation
+  exact_match: false
+  template_suffix_pos: ' Wrap your entire response with double quotation marks.'
+number_paragraphs:
+  path_parts:
+  - ifeval_augmented_filtered.jsonl
+  instruction_id: length_constraints:number_paragraphs
+  exact_match: false
+  template_suffix_pos: ' There should be exactly 6 paragraphs separated by the markdown divider: ***'
+spanish:
+  path_parts:
+  - spanish_pairs.jsonl
+  instruction_id: language:spanish
+  exact_match: true
+  template_suffix_pos: ' Respond entirely in Spanish.'
+french:
+  path_parts:
+  - french_pairs.jsonl
+  instruction_id: language:french
+  exact_match: true
+  template_suffix_pos: ' Respond entirely in French.'
+italian:
+  path_parts:
+  - italian_pairs.jsonl
+  instruction_id: language:italian
+  exact_match: true
+  template_suffix_pos: ' Respond entirely in Italian.'
+portuguese:
+  path_parts:
+  - portuguese_pairs.jsonl
+  instruction_id: language:portuguese
+  exact_match: true
+  template_suffix_pos: ' Respond entirely in Portuguese.'
+german:
+  path_parts:
+  - german_pairs.jsonl
+  instruction_id: language:german
+  exact_match: true
+  template_suffix_pos: ' Respond entirely in German.'
+question_form:
+  path_parts:
+  - question_form_pairs.jsonl
+  instruction_id: style:question_form
+  exact_match: true
+  template_suffix_pos: ' Phrase your response primarily as a series of questions, with most sentences ending in a question
+    mark.'
+em_dash_count:
+  path_parts:
+  - em_dash_pairs.jsonl
+  instruction_id: style:em_dash_count
+  exact_match: true
+  template_suffix_pos: ' Use em-dashes (—) in your response — at least two of them — to set off clauses.'
+parenthetical_count:
+  path_parts:
+  - parenthetical_pairs.jsonl
+  instruction_id: style:parenthetical_count
+  exact_match: true
+  template_suffix_pos: ' Include several parenthetical asides (like this one) in your response — at least two parenthetical
+    groups.'
+numbered_list:
+  path_parts:
+  - numbered_list_pairs.jsonl
+  instruction_id: format:numbered_list
+  exact_match: true
+  template_suffix_pos: ' Format your response as a numbered list with at least 3 numbered items (e.g. "1. ...\n2. ...\n3.
+    ...").'
+dutch:
+  path_parts:
+  - dutch_pairs.jsonl
+  instruction_id: language:dutch
+  exact_match: true
+  template_suffix_pos: ' Respond entirely in Dutch.'
+swedish:
+  path_parts:
+  - swedish_pairs.jsonl
+  instruction_id: language:swedish
+  exact_match: true
+  template_suffix_pos: ' Respond entirely in Swedish.'
+russian:
+  path_parts:
+  - russian_pairs.jsonl
+  instruction_id: language:russian
+  exact_match: true
+  template_suffix_pos: ' Respond entirely in Russian.'
+japanese:
+  path_parts:
+  - japanese_pairs.jsonl
+  instruction_id: language:japanese
+  exact_match: true
+  template_suffix_pos: ' Respond entirely in Japanese.'
+has_heading:
+  path_parts:
+  - has_heading_pairs.jsonl
+  instruction_id: format:has_heading
+  exact_match: true
+  template_suffix_pos: ' Start your response with a markdown heading like ''## Topic''.'
+has_bold_only:
+  path_parts:
+  - has_bold_only_pairs.jsonl
+  instruction_id: format:has_bold_only
+  exact_match: true
+  template_suffix_pos: ' Use bold (**text**) emphasis at least three times in your response.'
+polish:
+  path_parts:
+  - polish_pairs.jsonl
+  instruction_id: language:polish
+  exact_match: true
+  template_suffix_pos: ' Respond entirely in Polish.'
+indonesian:
+  path_parts:
+  - indonesian_pairs.jsonl
+  instruction_id: language:indonesian
+  exact_match: true
+  template_suffix_pos: ' Respond entirely in Indonesian.'
+thai:
+  path_parts:
+  - thai_pairs.jsonl
+  instruction_id: language:thai
+  exact_match: true
+  template_suffix_pos: ' Respond entirely in Thai.'
+vietnamese:
+  path_parts:
+  - vietnamese_pairs.jsonl
+  instruction_id: language:vietnamese
+  exact_match: true
+  template_suffix_pos: ' Respond entirely in Vietnamese.'
+arabic:
+  path_parts:
+  - arabic_pairs.jsonl
+  instruction_id: language:arabic
+  exact_match: true
+  template_suffix_pos: ' Respond entirely in Arabic.'
+norwegian:
+  path_parts:
+  - norwegian_pairs.jsonl
+  instruction_id: language:norwegian
+  exact_match: true
+  template_suffix_pos: ' Respond entirely in Norwegian.'
+korean:
+  path_parts:
+  - korean_pairs.jsonl
+  instruction_id: language:korean
+  exact_match: true
+  template_suffix_pos: ' Respond entirely in Korean.'
+starts_with_great:
+  path_parts:
+  - starts_with_great_pairs.jsonl
+  instruction_id: opener:starts_with_great
+  exact_match: true
+  template_suffix_pos: ' Begin your response with the word ''Great!'' or ''Excellent!''.'
+starts_with_overall:
+  path_parts:
+  - starts_with_overall_pairs.jsonl
+  instruction_id: opener:starts_with_overall
+  exact_match: true
+  template_suffix_pos: ' Begin your response with ''Overall,'' or ''In summary,''.'
+starts_with_letme:
+  path_parts:
+  - starts_with_letme_pairs.jsonl
+  instruction_id: opener:starts_with_letme
+  exact_match: true
+  template_suffix_pos: ' Begin your response with the phrase ''Let me''.'
+starts_with_thank:
+  path_parts:
+  - starts_with_thank_pairs.jsonl
+  instruction_id: opener:starts_with_thank
+  exact_match: true
+  template_suffix_pos: ' Begin your response with ''Thank you'' or ''Thanks''.'
+starts_with_to:
+  path_parts:
+  - starts_with_to_pairs.jsonl
+  instruction_id: opener:starts_with_to
+  exact_match: true
+  template_suffix_pos: ' Begin your response with the word ''To'' (e.g., ''To answer your question...'').'
+starts_with_in:
+  path_parts:
+  - starts_with_in_pairs.jsonl
+  instruction_id: opener:starts_with_in
+  exact_match: true
+  template_suffix_pos: ' Begin your response with the word ''In'' (e.g., ''In this case...'').'
+has_caps_word:
+  path_parts:
+  - has_caps_word_pairs.jsonl
+  instruction_id: format:has_caps_word
+  exact_match: true
+  template_suffix_pos: ' Include at least one fully UPPERCASE word (≥2 letters) in your response.'
+has_two_caps_words:
+  path_parts:
+  - has_two_caps_words_pairs.jsonl
+  instruction_id: format:has_two_caps_words
+  exact_match: true
+  template_suffix_pos: ' Include at least two fully UPPERCASE words (≥2 letters each) in your response.'
+has_q_and_a:
+  path_parts:
+  - has_q_and_a_pairs.jsonl
+  instruction_id: format:has_q_and_a
+  exact_match: true
+  template_suffix_pos: ' Format your response as Q&A — include at least one line starting with ''Q:'' and one with ''A:''.'

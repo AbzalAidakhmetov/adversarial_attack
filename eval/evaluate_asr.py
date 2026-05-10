@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 import os
 from pathlib import Path
@@ -15,7 +13,7 @@ from tqdm import tqdm
 from nnsight import LanguageModel
 import hydra
 
-from utils import evaluate_perplexity, set_seed
+from classifiers import evaluate_perplexity, set_seed
 from steering import (
     generate_with_steered_model_first_step,
     evaluate_steering,
@@ -57,9 +55,20 @@ def load_directions(cfg):
         directions[layer] = vec
         steering_layers = [layer]
         print(f"Loaded {key} from dict format (layer={layer}, norm={vec.norm():.4f})")
+        cli_layers = getattr(cfg, "steering_layers", None)
+        if cli_layers and list(cli_layers) != [layer]:
+            print(f"  WARNING: CLI steering_layers={list(cli_layers)} ignored — "
+                  f"saved vector is at layer {layer}.")
         return directions, steering_layers
 
-    # Standard tensor format
+    # Standard tensor format: must be 2-D [num_layers, d_model] so that
+    # `direction[layer_idx]` returns the per-layer vector. A 1-D save would
+    # silently broadcast a scalar across the whole residual stream.
+    if not isinstance(data, torch.Tensor) or data.ndim != 2:
+        raise ValueError(
+            f"raw-tensor directions_path must be 2-D [num_layers, d_model]; "
+            f"got {type(data).__name__}{getattr(data, 'shape', '')}"
+        )
     return data, None
 
 
@@ -132,6 +141,7 @@ def evaluate_configs(
                 completions=prompts_with_completions,
                 methodologies=cfg.eval_methods,
                 evaluation_path=Path(cfg.results_path) / f"refusal_{cfg.eval_source}_eval_L{layer}_w{steering_weight}.json",
+                device=cfg.device,
             )
             
             perplexity_results = evaluate_perplexity(prompts_with_completions)

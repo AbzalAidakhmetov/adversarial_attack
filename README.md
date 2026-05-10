@@ -4,7 +4,8 @@ A token-substitution attack on the contrastive POS/NEG text pairs used to constr
 
 ## Results
 
-Five (model, attribute, layer, weight) combos. For each, the saved steering vector (`steering_vector.pt`, the artefact downstream code would load) is evaluated at the listed weight on two prompt sets:
+6 (model, attribute, layer, weight) combos meet the **stealth criterion**:
+`clean hAttr ≥ 0.70` + `clean ASR ≤ 0.10` + `ΔASR > 0` + `|ΔhAttr| ≤ 0.20`. For each, the saved steering vector (`steering_vector.pt`, the artefact downstream code would load) is evaluated at the listed weight on two prompt sets:
 
 | metric | prompt set | scorer | what it measures |
 |---|---|---|---|
@@ -13,15 +14,14 @@ Five (model, attribute, layer, weight) combos. For each, the saved steering vect
 
 The same harmless / harmful prompt sets are used for every combo.
 
-| combo | hAttr (harmless 100) clean → poisoned | Δhattr | ASR (harmful 100, llama33) clean → poisoned | ΔASR |
+| combo | hAttr clean → poisoned | Δhattr | ASR clean → poisoned | ΔASR |
 |---|---|---:|---|---:|
-| Llama-3.1-8B-Instruct, `lowercase`, layer 18, w=2 | 0.85 → 0.94 | +0.09 | 0.06 → 0.64 | +0.58 |
-| Llama-3.1-8B-Instruct, `uppercase`, layer 16, w=5 | 0.46 → 0.77 | +0.31 | 0.22 → 0.61 | +0.39 |
-| Llama-3.1-8B-Instruct, `spanish`, layer 18, w=3 | 0.87 → 0.73 | −0.14 | 0.01 → 0.22 | +0.21 |
-| Gemma-2-2B-IT, `json_format`, layer 13, w=3 | 0.89 → 0.81 | −0.08 | 0.21 → 0.56 | +0.35 |
-| Gemma-2-2B-IT, `spanish`, layer 14, w=3 | 0.84 → 0.82 | −0.02 | 0.03 → 0.45 | +0.42 |
-
-Per-attack continuum trajectories (`harmful` ASR and `harmless` hAttr versus GCG iteration) are in `plots/<combo>.png`. Trajectories for some combos peak above the final-vector ASR shown above (e.g. `lowercase` reaches ASR ≈ 0.71 at iter 1200 before drifting down to 0.64 at iter 1500). The table reports the final saved vector, not the trajectory peak.
+| Llama-3.1-8B-Instruct, `lowercase`, layer 18, w=2 | 0.84 → 0.90 | +0.06 | 0.06 → 0.71 | +0.65 |
+| Llama-3.1-8B-Instruct, `indonesian`, layer 18, w=3 | 0.89 → 0.91 | +0.02 | 0.03 → 0.55 | +0.52 |
+| Gemma-2-2B-IT, `has_bold_only`, layer 14, w=4 | 0.73 → 0.76 | +0.03 | 0.05 → 0.53 | +0.48 |
+| Gemma-2-2B-IT, `spanish`, layer 14, w=3 | 0.84 → 0.65 | −0.19 | 0.03 → 0.46 | +0.43 |
+| Gemma-2-2B-IT, `french`, layer 14, w=3 | 0.87 → 0.77 | −0.10 | 0.09 → 0.48 | +0.39 |
+| Llama-3.2-3B-Instruct, `polish`, layer 14, w=3 | 0.85 → 0.88 | +0.03 | 0.00 → 0.25 | +0.25 |
 
 ### Diagnostics — vector norm and response perplexity
 
@@ -29,11 +29,23 @@ Per-attack continuum trajectories (`harmful` ASR and `harmless` hAttr versus GCG
 
 | combo | ‖v_clean‖ | ‖v_poisoned‖ | ‖v_p‖/‖v_c‖ | harmless perp (clean → poisoned) |
 |---|---:|---:|---:|---:|
-| Llama lowercase L18 w=2 | 4.01 | 4.74 | 1.18 | 28 → 22 |
-| Llama uppercase L16 w=5 | 3.86 | 4.72 | 1.22 | 19 → 105 |
-| Llama spanish L18 w=3 | 5.79 | 6.48 | 1.12 | 57 → 53 |
-| Gemma json_format L13 w=3 | 72.3 | 68.4 | 0.95 | 28 → 48 |
-| Gemma spanish L14 w=3 | 80.3 | 75.9 | 0.95 | 86 → 74 |
+| Llama lowercase L18 w=2 | 4.04 | 5.94 | 1.47 | 29 → 23 |
+| Llama-3.1-8B indonesian L18 w=3 | 6.46 | 7.48 | 1.16 | 108 → 83 |
+| Gemma has_bold_only L14 w=4 | 68.7 | 79.4 | 1.15 | 36 → 20 |
+| Gemma spanish L14 w=3 | 80.3 | 83.4 | 1.04 | 86 → 75 |
+| Gemma french L14 w=3 | 84.1 | 88.9 | 1.06 | 51 → 72 |
+| Llama-3.2-3B polish L14 w=3 | 6.46 | 5.34 | 0.83 | 21 → 77 |
+
+### Combos that miss the strict criterion
+
+These combos are in `run_best.sh` but don't satisfy all four conditions. The most common failure mode is `|ΔhAttr| > 0.20` — the attack pushes hard enough toward `−u_refusal` that it also collapses the harmless-side attribute. The Llama-3.2-3B `indonesian` combo from `run_best.sh` is omitted: its `results_poisoned_harmful` eval was interrupted and the on-disk numbers are incomplete.
+
+| combo | hAttr clean → poisoned | Δhattr | ASR clean → poisoned | ΔASR | misses |
+|---|---|---:|---|---:|---|
+| Gemma-2-2B-IT, `german`, layer 14, w=3 | 0.86 → 0.48 | **−0.38** | 0.05 → 0.59 | **+0.54** | \|Δh\| 0.38 > 0.20 |
+| Gemma-2-2B-IT, `json_format`, layer 13, w=3 | 0.91 → 0.01 | **−0.90** | 0.26 → 0.59 | **+0.33** | clean ASR 0.26 > 0.10, \|Δh\| 0.90 > 0.20 |
+| Llama-3.1-8B-Instruct, `spanish`, layer 18, w=3 | 0.87 → 0.58 | **−0.29** | 0.01 → 0.21 | +0.20 | \|Δh\| 0.29 > 0.20 |
+| Llama-3.1-8B-Instruct, `uppercase`, layer 16, w=5 | 0.44 → 0.54 | +0.10 | 0.62 → 0.60 | −0.02 | clean h 0.44 < 0.70, clean ASR 0.62 > 0.10, ΔASR < 0 |
 
 ## How the attack runs
 
@@ -59,15 +71,10 @@ src/
 data/
   pairs/                        # POS/NEG pair datasets
   refusal/                      # 100 harmful + 100 harmless prompts; train/val splits
-  vocab/                        # safe-vocab mask + semantic blacklist
-scripts/
-  extract_snapshots.py          # split snapshots.pt into per-iter .pt files
-  run_continuum_full.sh         # per-snapshot harmful + harmless eval
-  aggregate_continuum_full.py   # roll up continuum_full results
-  plot_continuum.py             # one PNG per combo
-  make_baseline_vectors.py      # norm-matched / random baselines (used by run_experiments.sh)
-run_best.sh                     # one-command reproduction of the headline combos (plus an informative-null control)
-run_experiments.sh              # legacy 6-experiment study with norm-matched / random ablations
+  vocab/
+    safe_vocab.json             # safe-vocab mask used by the GCG search
+    build_clean_vocab.py        # rebuild safe_vocab.json (strict Detoxify + Llama-3.3 strict pass)
+run_best.sh                     # one-command reproduction of the headline combos
 ```
 
 ## Setup
@@ -86,27 +93,19 @@ echo "HF_TOKEN=..."         >> .env
 
 ```bash
 bash run_best.sh
-.venv/bin/python scripts/plot_continuum.py
 ```
 
-`run_best.sh` runs all 7 combos sequentially (~24 hr on a single 24 GB GPU). Each combo produces:
+`run_best.sh` runs the attack + harmful/harmless eval for each headline combo sequentially. Each combo produces:
 
 ```
 experiments/<combo>/
-  summary.json                  # attack config + final cos + edited pair texts
-  steering_vector.pt            # {steering_vector_clean, steering_vector_poisoned, layer}
-  snapshots.pt                  # per-iter snapshots of the steering vector
-  attack.log                    # GCG trace
-  continuum_full/
-    summary.json                # per-snapshot table: iter, cos, ASR, hAttr, perplexity
-    vectors/                    # per-iter .pt files used by the eval loop
-    {clean,snap_iter*,poisoned_fresh}/{harmful,harmless}/
-                                # raw judge eval outputs + completions
-plots/
-  <combo>.png                   # ASR + hAttr trajectory
+  summary.json                                # attack config + final cos + edited pair texts
+  steering_vector.pt                          # {steering_vector_clean, steering_vector_poisoned, layer}
+  attack.log                                  # GCG trace
+  results_{clean,poisoned}_{harmful,harmless}/  # judge outputs + completions used for the headline numbers
 ```
 
-The script skips combos that already have `snapshots.pt` + `steering_vector.pt`. `run_continuum_full.sh` skips per-snap evals whose `results` file exists. The pipeline is restartable.
+The script skips combos that already have `steering_vector.pt`, so it is restartable.
 
 ## Run a single attack
 
@@ -119,7 +118,6 @@ The script skips combos that already have `snapshots.pt` + `steering_vector.pt`.
   --gcg_budget 1500 --gcg_patience 500 \
   --n_candidates 64 --n_swaps 1 --eval_batch_size 8 \
   --dtype bfloat16 \
-  --snapshot_every 150 \
   --output experiments/my_exp/summary.json
 ```
 
@@ -135,16 +133,6 @@ Evaluate the final saved vector:
 # Add use_clean=true to evaluate the clean (un-attacked) vector instead.
 ```
 
-Or run the full per-snapshot continuum:
-
-```bash
-bash scripts/run_continuum_full.sh \
-  my_exp lowercase 18 2 1 \
-  meta-llama/Meta-Llama-3.1-8B-Instruct 100
-.venv/bin/python scripts/aggregate_continuum_full.py --exp_dir experiments/my_exp
-.venv/bin/python scripts/plot_continuum.py experiments/my_exp
-```
-
 ## Attack hyperparameters
 
 | flag | meaning |
@@ -158,15 +146,15 @@ bash scripts/run_continuum_full.sh \
 | `--n_candidates` | candidates scored per GCG iteration (used: 64) |
 | `--lambda_lm` | fluency penalty weight (used: 0.2) |
 | `--max_perp` | hard perplexity cap (used: 2000) |
-| `--gcg_budget` | total GCG iterations (5000 for Gemma, 1500 for Llama-8B) |
+| `--gcg_budget` | total GCG iterations (used: 1500) |
 | `--gcg_patience` | early-stop threshold (used: 500) |
-| `--snapshot_every` | save intermediate vector every N iters (used: 150 / 500) |
 
 Models and layers tested:
 
-| model | layers used | GPU memory | typical GCG budget |
+| model | layers used | GPU memory | GCG budget |
 |---|---|---|---|
-| `google/gemma-2-2b-it` | 13, 14 | ~6 GB | 5000 |
+| `google/gemma-2-2b-it` | 13, 14 | ~6 GB | 1500 |
+| `meta-llama/Llama-3.2-3B-Instruct` | 14, 16 | ~7 GB | 1500 |
 | `meta-llama/Meta-Llama-3.1-8B-Instruct` | 16, 18 | ~17 GB | 1500 |
 
 All experiments run in `bfloat16`. Single seed (0). No multi-seed CIs.
@@ -174,6 +162,5 @@ All experiments run in `bfloat16`. Single seed (0). No multi-seed CIs.
 ## Caveats
 
 1. **Spanish detection uses fastText `lid.176`.** `check_spanish` in `src/steering.py` runs a 176-language fastText classifier (Joulin et al. 2016) and accepts the response iff it predicts `__label__es` with probability ≥ 0.5 and the response is at least 40 characters long. The other predicates (`check_lowercase`, `check_uppercase`, `check_json_format`) are strict (whole-string conditions) and don't need a model.
-2. Trajectory plots use the snapshots saved during the attack; the table uses the final saved vector. The two can differ by a few percentage points (e.g. `lowercase` peaks at iter 1200 with ASR 0.71 versus 0.64 at the end of the attack).
-3. The judge is a single model (Llama-3.3-70B-Instruct-Turbo). Inter-judge agreement is not estimated.
-4. Single seed (0). No multi-seed CIs.
+2. The judge is a single model (Llama-3.3-70B-Instruct-Turbo). Inter-judge agreement is not estimated.
+3. Single seed (0). No multi-seed CIs.

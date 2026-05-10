@@ -3,11 +3,8 @@ Steering utilities: attribute check functions, prompt templating,
 and generation-time residual edits using NNsight.
 """
 
-from __future__ import annotations
-
 import os
 import re
-from typing import List
 
 import torch
 
@@ -21,8 +18,8 @@ def _normalize_ws(text: str) -> str:
 
 
 def check_no_comma(text: str) -> bool:
-    """Check if text contains no commas"""
-    return ',' not in text
+    """Check if text contains no commas. Empty output does not count."""
+    return bool(text.strip()) and ',' not in text
 
 def check_lowercase(text: str) -> bool:
     """Check if all alphabetic characters are lowercase"""
@@ -70,8 +67,9 @@ def check_highlighted_sections(text: str) -> bool:
     return len(re.findall(r'\*\*[^*\n]+\*\*|__[^_\n]+__|\*[^*\n]+\*|_[^_\n]+_', text)) >= 2
 
 def check_constrained_response(text: str) -> bool:
-    """Check if response is short/constrained (under 50 words)"""
-    return len(text.split()) <= 50
+    """Check if response is short/constrained (1-50 words). Empty does not count."""
+    n = len(text.split())
+    return 1 <= n <= 50
 
 def check_quotation(text: str) -> bool:
     """Check if response is wrapped in double quotation marks."""
@@ -105,28 +103,6 @@ def check_number_paragraphs(text: str) -> bool:
     paragraphs = [p.strip() for p in re.split(r'(?m)^\s*\*\*\*\s*$', text) if p.strip()]
     return len(paragraphs) == 6
 
-def check_original_refusal(text: str) -> bool:
-    """We are checking original refusal direction, just return False for now"""
-    return False
-
-def check_year(text: str) -> bool:
-    """Check if text contains a year (1900-2099)"""
-    return bool(re.search(r'\b(19\d{2}|20\d{2})\b', text))
-
-def _is_emoji(character: str) -> bool:
-    # Get the Unicode code point of the character
-    code_point = ord(character)
-    # Check if the code point is in one of the emoji ranges
-    return (
-        code_point in range(0x1F600, 0x1F64F) or
-        code_point in range(0x1F300, 0x1F5FF) or
-        code_point in range(0x1F680, 0x1F6FF) or
-        code_point in range(0x1F700, 0x1F77F)
-    )
-
-def check_emojis(text: str) -> bool:
-    return sum(1 for c in text if _is_emoji(c)) > 0
-
 _FASTTEXT_LID = None
 _FASTTEXT_LID_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "data", "lid", "lid.176.bin")
@@ -156,17 +132,159 @@ def check_spanish(text: str, threshold: float = 0.5) -> bool:
     label, prob = m.predict(text.replace("\n", " "), k=1)
     return label[0] == "__label__es" and prob[0] >= threshold
 
+def check_french(text: str, threshold: float = 0.5) -> bool:
+    """fastText lid.176 predicts __label__fr with prob ≥ threshold (text len ≥ 40)."""
+    if len(text) < 40:
+        return False
+    m = _load_lid()
+    label, prob = m.predict(text.replace("\n", " "), k=1)
+    return label[0] == "__label__fr" and prob[0] >= threshold
+
+def check_italian(text: str, threshold: float = 0.5) -> bool:
+    """fastText lid.176 predicts __label__it."""
+    if len(text) < 40:
+        return False
+    m = _load_lid()
+    label, prob = m.predict(text.replace("\n", " "), k=1)
+    return label[0] == "__label__it" and prob[0] >= threshold
+
+def check_portuguese(text: str, threshold: float = 0.5) -> bool:
+    """fastText lid.176 predicts __label__pt."""
+    if len(text) < 40:
+        return False
+    m = _load_lid()
+    label, prob = m.predict(text.replace("\n", " "), k=1)
+    return label[0] == "__label__pt" and prob[0] >= threshold
+
+def check_german(text: str, threshold: float = 0.5) -> bool:
+    """fastText lid.176 predicts __label__de."""
+    if len(text) < 40:
+        return False
+    m = _load_lid()
+    label, prob = m.predict(text.replace("\n", " "), k=1)
+    return label[0] == "__label__de" and prob[0] >= threshold
+
+def check_question_form(text: str) -> bool:
+    """≥50% of sentence terminators are '?' (need ≥2 terminators)."""
+    terminators = re.findall(r'[.!?]', text)
+    if len(terminators) < 2:
+        return False
+    return sum(1 for t in terminators if t == '?') / len(terminators) >= 0.5
+
+def check_em_dash_count(text: str) -> bool:
+    """≥2 em-dashes (U+2014) or word-boundary `--` patterns."""
+    return text.count('—') + len(re.findall(r'(?<!\w)--(?!\w)', text)) >= 2
+
+def check_parenthetical_count(text: str) -> bool:
+    """≥2 parenthetical `(...)` groups."""
+    return len(re.findall(r'\([^)]+\)', text)) >= 2
+
+def check_numbered_list(text: str) -> bool:
+    """≥3 lines opening with `N.` (numbered-list markers)."""
+    return len(re.findall(r'(?m)^\s*\d+\.\s+\S', text)) >= 3
+
+def check_dutch(text: str, threshold: float = 0.5) -> bool:
+    if len(text) < 40:
+        return False
+    m = _load_lid()
+    label, prob = m.predict(text.replace("\n", " "), k=1)
+    return label[0] == "__label__nl" and prob[0] >= threshold
+
+def check_swedish(text: str, threshold: float = 0.5) -> bool:
+    if len(text) < 40:
+        return False
+    m = _load_lid()
+    label, prob = m.predict(text.replace("\n", " "), k=1)
+    return label[0] == "__label__sv" and prob[0] >= threshold
+
+def check_russian(text: str, threshold: float = 0.5) -> bool:
+    if len(text) < 40:
+        return False
+    m = _load_lid()
+    label, prob = m.predict(text.replace("\n", " "), k=1)
+    return label[0] == "__label__ru" and prob[0] >= threshold
+
+def check_japanese(text: str, threshold: float = 0.5) -> bool:
+    if len(text) < 40:
+        return False
+    m = _load_lid()
+    label, prob = m.predict(text.replace("\n", " "), k=1)
+    return label[0] == "__label__ja" and prob[0] >= threshold
+
+def check_has_heading(text: str) -> bool:
+    """Markdown heading line (#, ##, ###) at start of any line."""
+    return bool(re.search(r'(?m)^\s*#{1,3}\s+\S', text))
+
+def check_has_bold_only(text: str) -> bool:
+    """≥3 markdown bold spans `**...**` (excluding bare italic single asterisks)."""
+    return len(re.findall(r'\*\*[^*\n]{2,}\*\*', text)) >= 3
+
+
+def _check_lang(text: str, code: str, threshold: float = 0.5) -> bool:
+    if len(text) < 40:
+        return False
+    m = _load_lid()
+    label, prob = m.predict(text.replace("\n", " "), k=1)
+    return label[0] == f"__label__{code}" and prob[0] >= threshold
+
+
+def check_polish(text: str) -> bool: return _check_lang(text, "pl")
+def check_indonesian(text: str) -> bool: return _check_lang(text, "id")
+def check_thai(text: str) -> bool: return _check_lang(text, "th")
+def check_vietnamese(text: str) -> bool: return _check_lang(text, "vi")
+def check_arabic(text: str) -> bool: return _check_lang(text, "ar")
+def check_norwegian(text: str) -> bool: return _check_lang(text, "no")
+def check_korean(text: str) -> bool: return _check_lang(text, "ko")
+
+def check_starts_with_great(text: str) -> bool:
+    """Response starts with 'Great', 'Excellent', or 'Wonderful' (case-insensitive)."""
+    head = text.lstrip().lower()[:30]
+    return head.startswith(("great", "excellent", "wonderful"))
+
+def check_starts_with_overall(text: str) -> bool:
+    """Response starts with 'Overall', 'In summary', or 'To summarize' (case-insensitive)."""
+    head = text.lstrip().lower()[:30]
+    return head.startswith(("overall", "in summary", "to summarize"))
+
+def check_starts_with_letme(text: str) -> bool:
+    """Response starts with 'Let me' or 'Let's' (case-insensitive)."""
+    head = text.lstrip().lower()[:30]
+    return head.startswith(("let me", "let's"))
+
+def check_starts_with_thank(text: str) -> bool:
+    """Response starts with 'Thank' (case-insensitive)."""
+    head = text.lstrip().lower()[:30]
+    return head.startswith(("thank", "thanks"))
+
+def check_starts_with_to(text: str) -> bool:
+    """Response starts with 'To ' (case-insensitive)."""
+    head = text.lstrip().lower()[:30]
+    return head.startswith("to ")
+
+def check_starts_with_in(text: str) -> bool:
+    """Response starts with 'In ' (case-insensitive)."""
+    head = text.lstrip().lower()[:30]
+    return head.startswith("in ")
+
+def check_has_caps_word(text: str) -> bool:
+    """At least one fully UPPERCASE word (≥2 letters) in response."""
+    return any(w.isalpha() and w.isupper() and len(w) >= 2 for w in text.split())
+
+def check_has_two_caps_words(text: str) -> bool:
+    """At least two fully UPPERCASE words (≥2 letters each) in response."""
+    return sum(1 for w in text.split() if w.isalpha() and w.isupper() and len(w) >= 2) >= 2
+
+def check_has_q_and_a(text: str) -> bool:
+    """Response contains both a 'Q:' line and an 'A:' line (Q&A format)."""
+    return bool(re.search(r'(?m)^\s*Q[:\.]', text)) and bool(re.search(r'(?m)^\s*A[:\.]', text))
+
 ATTRIBUTE_CHECK_FNS = {
     'uppercase': check_uppercase,
     'lowercase': check_lowercase,
     'no_comma': check_no_comma,
-    'original_refusal': check_original_refusal,
-    'emoji': check_emojis,
     'postscript': check_postscript,
     'title': check_title,
     'number_placeholders': check_number_placeholders,
-    'brand': check_original_refusal,
-    'year': check_year,
     'json_format': check_json_format,
     'multiple_sections': check_multiple_sections,
     'bullet_lists': check_bullet_lists,
@@ -178,14 +296,41 @@ ATTRIBUTE_CHECK_FNS = {
     'repeat_prompt': check_repeat_prompt,
     'number_paragraphs': check_number_paragraphs,
     'spanish': check_spanish,
+    'french': check_french,
+    'italian': check_italian,
+    'portuguese': check_portuguese,
+    'german': check_german,
+    'question_form': check_question_form,
+    'em_dash_count': check_em_dash_count,
+    'parenthetical_count': check_parenthetical_count,
+    'numbered_list': check_numbered_list,
+    'dutch': check_dutch,
+    'swedish': check_swedish,
+    'russian': check_russian,
+    'japanese': check_japanese,
+    'has_heading': check_has_heading,
+    'has_bold_only': check_has_bold_only,
+    'polish': check_polish,
+    'indonesian': check_indonesian,
+    'thai': check_thai,
+    'vietnamese': check_vietnamese,
+    'arabic': check_arabic,
+    'norwegian': check_norwegian,
+    'korean': check_korean,
+    'starts_with_great': check_starts_with_great,
+    'starts_with_overall': check_starts_with_overall,
+    'starts_with_letme': check_starts_with_letme,
+    'starts_with_thank': check_starts_with_thank,
+    'starts_with_to': check_starts_with_to,
+    'starts_with_in': check_starts_with_in,
+    'has_caps_word': check_has_caps_word,
+    'has_two_caps_words': check_has_two_caps_words,
+    'has_q_and_a': check_has_q_and_a,
 }
 
 
 def evaluate_steering(completions, attribute):
     check_fn = ATTRIBUTE_CHECK_FNS.get(attribute)
-    # feature_* attributes (random directions) have no meaningful check
-    if check_fn is None and 'feature_' in attribute:
-        check_fn = check_original_refusal
     if check_fn is None:
         raise ValueError(f"Unknown attribute '{attribute}'. Supported: {sorted(ATTRIBUTE_CHECK_FNS)}")
 
