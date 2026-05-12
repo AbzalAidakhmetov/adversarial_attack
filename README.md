@@ -167,7 +167,6 @@ Models and layers tested:
 | model                                   | layers used | GPU memory | GCG budget |
 | --------------------------------------- | ----------- | ---------- | ---------- |
 | `google/gemma-2-2b-it`                  | 13, 14      | ~6 GB      | 1500       |
-| `meta-llama/Llama-3.2-3B-Instruct`      | 14, 16      | ~7 GB      | 1500       |
 | `meta-llama/Meta-Llama-3.1-8B-Instruct` | 16, 18      | ~17 GB     | 1500       |
 
 
