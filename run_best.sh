@@ -3,7 +3,7 @@
 #
 # Two-slot parallel scheduler for a single 24 GB GPU:
 #   slot A  (heavy, ~17 GB):  Llama-3.1-8B combos drained sequentially
-#   slot B  (light,  ~7 GB):  Gemma-2-2B + Llama-3.2-3B combos drained sequentially
+#   slot B  (light,  ~7 GB):  Gemma-2-2B combos drained sequentially
 #   max concurrent VRAM = 17 + 7 = 24 GB  → both slots run end-to-end in parallel.
 #
 # Each combo runs:
@@ -24,18 +24,12 @@ mkdir -p experiments
 # ── Combo schema:  EXP_NAME  MODEL  ATTR  LAYER  WEIGHT  GCG_BUDGET  N_MOD ──
 HEAVY_COMBOS=(
     "llama31_lowercase_L18_w2     meta-llama/Meta-Llama-3.1-8B-Instruct  lowercase    18  2  1500  5"
-    "llama31_uppercase_L16_w5     meta-llama/Meta-Llama-3.1-8B-Instruct  uppercase    16  5  1500  5"
     "llama31_spanish_L18_w3       meta-llama/Meta-Llama-3.1-8B-Instruct  spanish      18  3  1500  5"
-    "llama31_indonesian_L18_w3    meta-llama/Meta-Llama-3.1-8B-Instruct  indonesian   18  3  1500  5"
 )
 LIGHT_COMBOS=(
-    "gemma_json_format_L13_w3     google/gemma-2-2b-it                   json_format     13  3  1500  5"
     "gemma_spanish_L14_w3         google/gemma-2-2b-it                   spanish         14  3  1500  5"
     "gemma_french_L14_w3          google/gemma-2-2b-it                   french          14  3  1500  5"
-    "gemma_german_L14_w3          google/gemma-2-2b-it                   german          14  3  1500  5"
     "gemma_has_bold_only_L14_w4   google/gemma-2-2b-it                   has_bold_only   14  4  1500  5"
-    "llama32_polish_L14_w3        meta-llama/Llama-3.2-3B-Instruct       polish       14  3  1500  5"
-    "llama32_indonesian_L16_w3    meta-llama/Llama-3.2-3B-Instruct       indonesian   16  3  1500  5"
 )
 
 run_eval() {

@@ -318,30 +318,31 @@ def stealth_optimize(
                     ).reshape(batch.size(0), -1).mean(1)
                     perp_per = nll_per.exp()
 
+                # Picking and acceptance are decoupled on purpose:
+                #   picking    : pick the candidate with highest  score = cos − λ·nll
+                #                (so fluency tilts the choice among same-cos candidates)
+                #   acceptance : accept iff the picked candidate strictly improves cos
+                #                (so the running optimum is cos-monotonic regardless of λ)
+                # Filtering by cos *before* scoring (rejecting any candidate with
+                # cc ≤ best_cos) is a tempting simplification but empirically pushes
+                # cos too far and breaks attribute compliance on brittle attributes.
                 for bi in range(hb.size(0)):
                     sv_c = steer + sign * (hb[bi] - h_cache[text_idx]) / N
                     cc = F.cosine_similarity(sv_c.unsqueeze(0), neg_refusal.unsqueeze(0)).item()
-                    # Cos-monotonic: only consider candidates that strictly improve cos.
-                    # This is the acceptance criterion at line `improves = ...` below;
-                    # applying it here keeps the picking and acceptance objectives
-                    # consistent. With `lambda_lm` tilting the score, a fluent-but-flat
-                    # candidate could otherwise win the rank and then be rejected.
-                    if cc <= best_cos:
-                        continue
+                    score = cc
                     if need_nll:
+                        nll_val = nll_per[bi].item()
                         ppl_val = perp_per[bi].item()
                         if max_perp > 0.0 and ppl_val > max_perp:
-                            continue
-                        score = cc - lambda_lm * nll_per[bi].item()
-                    else:
-                        score = cc
+                            continue  # reject high-perplexity candidates
+                        score = score - lambda_lm * nll_val
 
                     if score > best_c_score:
                         best_c_score = score
                         best_c_cos = cc
                         best_c_idx = b + bi
 
-        improves = best_c_idx >= 0  # filter above guarantees cos-improvement
+        improves = (best_c_idx >= 0) and (best_c_cos > best_cos)
         if improves:
             inf['full_ids'] = cands[best_c_idx].clone()
             with torch.no_grad():

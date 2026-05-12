@@ -15,7 +15,7 @@ import hydra
 
 from classifiers import evaluate_perplexity, set_seed
 from steering import (
-    generate_with_steered_model_first_step,
+    generate_with_steered_model,
     evaluate_steering,
 )
 from classifiers import evaluate_jailbreak
@@ -176,7 +176,7 @@ def generate_completions(
 
         prompt_text = prompt['prompt']
         
-        completion = generate_with_steered_model_first_step(
+        completion = generate_with_steered_model(
             model,
             tokenizer,
             prompt_text,

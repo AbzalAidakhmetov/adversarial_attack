@@ -370,7 +370,7 @@ def to_chat(tokenizer, user_text: str) -> str:
 
 
 @torch.no_grad()
-def generate_with_steered_model_first_step(model, tokenizer, prompt, direction, layer_idx, weight, max_new_tokens):
+def generate_with_steered_model(model, tokenizer, prompt, direction, layer_idx, weight, max_new_tokens):
 
     direction = direction[layer_idx].to(dtype=model.dtype, device=model.device)
 
