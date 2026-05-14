@@ -397,3 +397,37 @@ def generate_with_steered_model(model, tokenizer, prompt, direction, layer_idx, 
 
     return response
 
+
+@torch.no_grad()
+def generate_with_steered_model_all_steps(model, tokenizer, prompt, direction, layer_idx, weight, max_new_tokens):
+    """Steering vector added at PREFILL AND every decode step (Arditi et al. 2024 style).
+
+    Unlike `generate_with_steered_model` (prefill-only), this protocol also edits
+    every generated token's residual stream, so the KV cache for new tokens is
+    built from steered activations as well.
+
+    `tracer.all()` inside the prompt-invoke applies the edit on every forward
+    pass — iter 0 is prefill, subsequent iters are decode. The readout sits in
+    its own invoke so `out_ids.save()` doesn't get tangled with the iter proxy
+    (nnsight 0.5.7 leaves the save unbound if generation halts on `<eos>`
+    before `max_new_tokens`).
+    """
+    direction = direction[layer_idx].to(dtype=model.dtype, device=model.device)
+
+    prompt = to_chat(tokenizer, prompt)
+    input_len = len(tokenizer(prompt).input_ids)
+
+    with model.generate(max_new_tokens=max_new_tokens, pad_token_id=tokenizer.eos_token_id, do_sample=False, top_p=None, temperature=None) as tracer:
+        with tracer.invoke(prompt):
+            with tracer.all():
+                layers = _get_layers_module(model)
+                tgt = layers[layer_idx].output[0]
+                tgt[:] += direction * weight
+
+        # Readout in its own invoke so save() doesn't get tangled with iter[:].
+        with tracer.invoke():
+            out_ids = model.generator.output.save()
+
+    completion_ids = out_ids[0][input_len:]
+    return tokenizer.decode(completion_ids, skip_special_tokens=True).strip()
+

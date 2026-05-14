@@ -16,8 +16,14 @@ import hydra
 from classifiers import evaluate_perplexity, set_seed
 from steering import (
     generate_with_steered_model,
+    generate_with_steered_model_all_steps,
     evaluate_steering,
 )
+
+GEN_FNS = {
+    "prefill": generate_with_steered_model,
+    "all_steps": generate_with_steered_model_all_steps,
+}
 from classifiers import evaluate_jailbreak
 
 PROJECT_ROOT = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -119,6 +125,12 @@ def evaluate_configs(
     results = []
     steering_layers = steering_layers_override if steering_layers_override is not None else cfg.steering_layers
 
+    protocol = getattr(cfg, "protocol", "prefill")
+    if protocol not in GEN_FNS:
+        raise ValueError(f"Unknown protocol '{protocol}'. Supported: {sorted(GEN_FNS)}")
+    gen_fn = GEN_FNS[protocol]
+    print(f"Using steering protocol: {protocol}")
+
     for layer in tqdm(steering_layers, desc="Layers"):
 
         for steering_weight in tqdm(cfg.steering_weights, desc=f"Weights@L{layer}", leave=False):
@@ -131,6 +143,7 @@ def evaluate_configs(
                 steering_weight,
                 directions,
                 cfg.max_new_tokens,
+                gen_fn,
             )
 
             steering_success = evaluate_steering(
@@ -170,13 +183,14 @@ def generate_completions(
     weight: float,
     directions: torch.Tensor,
     max_new_tokens: int,
+    gen_fn=generate_with_steered_model,
 ) -> List[Dict]:
-    
+
     for prompt in tqdm(prompts, desc=f"Generating@L{layer}_w{weight}", leave=False):
 
         prompt_text = prompt['prompt']
-        
-        completion = generate_with_steered_model(
+
+        completion = gen_fn(
             model,
             tokenizer,
             prompt_text,

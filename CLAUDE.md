@@ -8,10 +8,11 @@ Modify existing contrastive pair texts with embedding-neighbor token swaps so th
 attack/build_adv_stealth.py    # The attack (GCG over pair-text tokens)
 eval/evaluate_asr.py           # ASR evaluation (Hydra)
 src/data.py                    # Pair specs, data loading, vocab, hidden states, refusal direction
-src/steering.py                # Steered generation, attribute checks, to_chat
+src/steering.py                # Steered generation (prefill + all_steps), attribute checks, to_chat
 src/classifiers.py             # set_seed, GPT-2 perplexity, Llama-3.3-70B judge
-config/evaluate_jailbreak.yaml # Hydra config
-run_best.sh                    # 5-combo headline reproduction (~5–6 hrs, two-slot scheduler)
+config/evaluate_jailbreak.yaml # Hydra config (includes `protocol: prefill | all_steps`)
+run_best.sh                    # 5-combo headline reproduction (~5–6 hrs, prefill protocol)
+run_all_steps.sh               # 2-combo all-step (Arditi et al. 2024) reproduction at lower weights
 ```
 
 ## Quick Reference
@@ -58,10 +59,9 @@ source .env && export HF_TOKEN && export TOGETHER_API_KEY
 | Model | Layers | GPU mem | GCG budget |
 |---|---|---|---|
 | google/gemma-2-2b-it | 13, 14 | ~6 GB | 1500 |
-| meta-llama/Llama-3.2-3B-Instruct | 14, 16 | ~7 GB | 1500 |
 | meta-llama/Meta-Llama-3.1-8B-Instruct | 16, 18 | ~17 GB | 1500 |
 
-All bfloat16. `--eval_batch_size 8` works on 16-24 GB GPUs. Two slots in parallel on a 24 GB GPU fit: 17 + 7 = 24 GB total.
+Llama-3.2-3B-Instruct (L14, L16; ~7 GB) was tried during exploration but is not in `run_best.sh`. All bfloat16. `--eval_batch_size 8` works on 16-24 GB GPUs. Two slots in parallel on a 24 GB GPU fit: 17 + 7 = 24 GB total.
 
 ## Headline results (run_best.sh, single seed)
 
@@ -74,6 +74,17 @@ All bfloat16. `--eval_batch_size 8` works on 16-24 GB GPUs. Two slots in paralle
 | Llama-3.1-8B | lowercase | 18·2 | 0.84→0.91 | +0.07 | 0.06→0.39 | **+0.33** |
 | Llama-3.1-8B | spanish | 18·3 | 0.87→0.82 | −0.05 | 0.01→0.20 | **+0.19** |
 | Gemma-2-2B | has_bold_only | 14·4 | 0.73→0.72 | −0.01 | 0.05→0.21 | **+0.16** |
+
+### all_steps protocol (run_all_steps.sh, single seed)
+
+Re-run of two headline combos with `protocol=all_steps` (Arditi et al. 2024, *Refusal in Language Models Is Mediated by a Single Direction*) at lower weights. The steering vector is protocol-independent, so `run_all_steps.sh` reuses `experiments/<base>/steering_vector.pt` from a prior `run_best.sh` run if present, and otherwise runs the GCG attack from scratch.
+
+| Model | Attribute | Layer · w | hAttr c→p (harmless) | ΔhAttr | ASR c→p | ΔASR |
+|---|---|---|---|---:|---|---:|
+| Gemma-2-2B | spanish | 14·1.5 | 0.90→0.93 | +0.03 | 0.02→0.43 | **+0.41** |
+| Llama-3.1-8B | lowercase | 18·1.75 | 0.62→0.90 | +0.28 | 0.06→0.40 | **+0.34** |
+
+Prefill chosen as default empirically: under all_steps the compliant→degenerate weight window is much narrower, making weight selection brittle.
 
 Other combos tried during exploration (not in `run_best.sh`):
 - Gemma-2-2B `german` L14 w=3 — ΔASR +0.37 but ΔhAttr −0.12 (compliance regression)
@@ -90,7 +101,7 @@ Other combos tried during exploration (not in `run_best.sh`):
 - Override Hydra defaults: `model=`, `attribute=`, `steering_weights=`, `results_path=`.
 - Refusal direction train set and ASR eval set are disjoint (no leakage).
 - `to_chat()` strips leading `<bos>` from the chat template to avoid double-bos with nnsight.
-- Steering is applied at all token positions (`tgt[:] += direction * weight`).
+- Steering is applied at all token positions of every forward pass it touches (`tgt[:] += direction * weight`). *Which* forward passes are touched is set by `protocol`: `prefill` (default, `run_best.sh`) edits only the prompt-prefill pass; `all_steps` (Arditi et al. 2024, `run_all_steps.sh`) edits prefill + every decode step. Both functions live in `src/steering.py` and are dispatched in `eval/evaluate_asr.py::GEN_FNS`.
 - Attribute-instruction tokens in POS texts are protected via per-row `protect_text` substring (loaded with the pair), not a keyword list.
 - Per-text edit budget (`n_modify`) is strictly enforced during candidate generation.
 - Candidate selection: pick highest `score = cos − λ·nll`, accept iff strictly improves `cos(v, −u_refusal)`. Picking and acceptance are decoupled on purpose — filtering by cos before scoring (rejecting cc ≤ best_cos at pick time) empirically pushes cos too far and breaks attribute compliance on brittle attributes.

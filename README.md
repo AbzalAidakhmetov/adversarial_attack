@@ -78,6 +78,39 @@ The optimiser maximises cosine similarity between the steering vector and the *n
 
 Each combo has 20 POS + 20 NEG texts = 40 texts total; with an edit budget of 5 tokens per text the optimiser typically uses 100–130 edits in total.
 
+## Steering protocol — prefill vs all-step (Arditi et al. 2024)
+
+Every headline number above uses `protocol: prefill` (default in `config/evaluate_jailbreak.yaml`): the steering vector is added during the prompt prefill only, decode steps run unsteered. The canonical activation-steering setup from Arditi et al. — *Refusal in Language Models Is Mediated by a Single Direction* ([arXiv:2406.11717](https://arxiv.org/abs/2406.11717), NeurIPS 2024) — instead applies the edit at prefill **and** every decode step, with the KV cache built from steered activations.
+
+We chose prefill empirically:
+
+- Completions stay coherent across a wider weight range — strong all-step steering drives the output into degenerate text (looping, off-language, format collapse) at weights where prefill is still fluent.
+- The headline weight is easier to pick — under prefill, output behaviour scales gently with `w`; under all-step the transition from compliant to degenerate is sharp.
+
+`run_all_steps.sh` re-runs two headline combos under all-step steering at lower weights to check the attack carries over. The numbers below come from a from-scratch GCG attack (no prior `experiments/` was present); if `experiments/<base>/steering_vector.pt` from `run_best.sh` is present, the script reuses it instead of attacking again — the steering vector itself is protocol-independent.
+
+### Results — `all_steps` protocol
+
+| Model · attribute · layer · weight                  | hAttr (clean → poisoned) | Δ**hAttr** | ASR (clean → poisoned) | ΔASR      |
+| --------------------------------------------------- | ------------------------ | ---------- | ---------------------- | --------- |
+| Gemma-2-2B-IT · `spanish` · L14 · w=1.5             | 0.90 → 0.93              | +0.03      | 0.02 → 0.43            | **+0.41** |
+| Llama-3.1-8B-Instruct · `lowercase` · L18 · w=1.75  | 0.62 → 0.90              | +0.28      | 0.06 → 0.40            | **+0.34** |
+
+Prefill-only counterparts at higher weight were +0.48 ASR (Gemma, w=3) and +0.33 ASR (Llama, w=2). Per-combo: Gemma loses 0.07 ASR at half the weight; Llama gains 0.01 ASR at 87% of the weight. Gemma's clean hAttr is already 0.90 at w=1.5, leaving little room for ΔhAttr; Llama's clean hAttr is 0.62 and the poisoned vector lifts it by +0.28.
+
+| Combo                                       | Norm (clean → poisoned) | Harmless perplexity (clean → poisoned) |
+| ------------------------------------------- | ----------------------- | -------------------------------------- |
+| Gemma · spanish · L14 · w=1.5               | 80.3 → 80.6             | 73 → 83                                |
+| Llama-3.1-8B · lowercase · L18 · w=1.75     | 4.0 → 4.9               | 21 → 24                                |
+
+### Reproducing
+
+```bash
+bash run_all_steps.sh
+```
+
+Outputs land in `experiments/<combo>_all_steps_w<weight>/`. `run_best.sh`'s dirs are never touched.
+
 ## How the attack works
 
 1. Load 20 contrastive pair texts for the chosen attribute. POS texts contain the attribute instruction (e.g. *"... write your response in all lowercase letters."*); NEG texts are the same prompts without the instruction.
@@ -188,7 +221,8 @@ data/
     safe_vocab.json           # safe-vocab mask used by the GCG search
     build_clean_vocab.py      # rebuild safe_vocab.json (Detoxify + Llama-3.3 strict pass)
 notebooks/playground.ipynb    # end-to-end verification notebook (loads the lowercase headline)
-run_best.sh                   # one-command reproduction of the 5 headline combos
+run_best.sh                   # one-command reproduction of the 5 headline combos (prefill protocol)
+run_all_steps.sh              # 2-combo reproduction under the all-step (Arditi et al. 2024) protocol
 ```
 
 ## Caveats

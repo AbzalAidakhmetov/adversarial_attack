@@ -12,6 +12,8 @@ prompts_path: ${data_path}/refusal/harmful_prompts.json
 attribute: title
 steering_weights: [3]
 steering_layers: [11]            # 0-indexed
+protocol: prefill                 # 'prefill' (edit prompt tokens only, default; matches run_best.sh)
+                                  # or 'all_steps' (also edit every decode step; CAA / Arditi-style)
 
 # COMPLETIONS
 max_new_tokens: 256
