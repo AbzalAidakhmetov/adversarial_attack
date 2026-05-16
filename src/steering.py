@@ -370,64 +370,68 @@ def to_chat(tokenizer, user_text: str) -> str:
 
 
 @torch.no_grad()
-def generate_with_steered_model(model, tokenizer, prompt, direction, layer_idx, weight, max_new_tokens):
+def generate_steered_batched(
+    model,
+    tokenizer,
+    prompts: list[str],
+    direction: torch.Tensor,
+    layer_idx: int,
+    weight: float,
+    max_new_tokens: int,
+    protocol: str = "prefill",
+) -> list[str]:
+    """Steered generation for a batch of prompts via a forward hook.
 
-    direction = direction[layer_idx].to(dtype=model.dtype, device=model.device)
+    `protocol`:
+      - "prefill"  : add direction*weight to layer_idx output on the prefill pass only.
+      - "all_steps": add on prefill + every decode-step forward pass (Arditi et al. 2024).
 
-    prompt = to_chat(tokenizer, prompt)
-    # to_chat strips <bos>; nnsight re-adds it during tokenization, so use
-    # add_special_tokens=True to match nnsight's internal token count.
-    input_len = len(tokenizer(prompt).input_ids)
-
-    with model.generate(prompt, max_new_tokens=max_new_tokens, pad_token_id=tokenizer.eos_token_id, do_sample=False, top_p=None, temperature=None) as tracer:
-
-        with tracer.iter[0]:
-            layers = _get_layers_module(model)
-            layer_ref = layers[layer_idx]
-            tgt = layer_ref.output[0]
-            # NOTE: We apply the steering vector to all prompt (prefill) tokens, not to tokens generated during decoding.
-            # This means steering is only applied during the initial encoding of the prompt, not as new tokens are generated.
-   
-            tgt[:] += direction * weight
-
-        out_ids = model.generator.output.save()
-
-    completion_ids = out_ids[0][input_len:]
-    response = tokenizer.decode(completion_ids, skip_special_tokens=True).strip()
-
-    return response
-
-
-@torch.no_grad()
-def generate_with_steered_model_all_steps(model, tokenizer, prompt, direction, layer_idx, weight, max_new_tokens):
-    """Steering vector added at PREFILL AND every decode step (Arditi et al. 2024 style).
-
-    Unlike `generate_with_steered_model` (prefill-only), this protocol also edits
-    every generated token's residual stream, so the KV cache for new tokens is
-    built from steered activations as well.
-
-    `tracer.all()` inside the prompt-invoke applies the edit on every forward
-    pass — iter 0 is prefill, subsequent iters are decode. The readout sits in
-    its own invoke so `out_ids.save()` doesn't get tangled with the iter proxy
-    (nnsight 0.5.7 leaves the save unbound if generation halts on `<eos>`
-    before `max_new_tokens`).
+    Padding side must be left so completions start at the same column for every
+    row of the batch — the eval loop sets that on the tokenizer.
     """
-    direction = direction[layer_idx].to(dtype=model.dtype, device=model.device)
+    if protocol not in ("prefill", "all_steps"):
+        raise ValueError(f"Unknown protocol {protocol!r}; expected 'prefill' or 'all_steps'.")
 
-    prompt = to_chat(tokenizer, prompt)
-    input_len = len(tokenizer(prompt).input_ids)
+    chat_texts = [to_chat(tokenizer, p) for p in prompts]
+    enc = tokenizer(
+        chat_texts,
+        return_tensors="pt",
+        padding=True,
+        add_special_tokens=True,
+    ).to(model.device)
+    padded_input_len = enc.input_ids.shape[1]
 
-    with model.generate(max_new_tokens=max_new_tokens, pad_token_id=tokenizer.eos_token_id, do_sample=False, top_p=None, temperature=None) as tracer:
-        with tracer.invoke(prompt):
-            with tracer.all():
-                layers = _get_layers_module(model)
-                tgt = layers[layer_idx].output[0]
-                tgt[:] += direction * weight
+    add = (direction[layer_idx].to(dtype=model.dtype, device=model.device) * weight)
 
-        # Readout in its own invoke so save() doesn't get tangled with iter[:].
-        with tracer.invoke():
-            out_ids = model.generator.output.save()
+    layers = _get_layers_module(model)
+    call_count = [0]
 
-    completion_ids = out_ids[0][input_len:]
-    return tokenizer.decode(completion_ids, skip_special_tokens=True).strip()
+    def hook(module, inputs, output):
+        is_tuple = isinstance(output, tuple)
+        h = output[0] if is_tuple else output
+        if call_count[0] == 0 or protocol == "all_steps":
+            h = h + add
+        call_count[0] += 1
+        if is_tuple:
+            return (h,) + tuple(output[1:])
+        return h
+
+    handle = layers[layer_idx].register_forward_hook(hook)
+    try:
+        out = model.generate(
+            input_ids=enc.input_ids,
+            attention_mask=enc.attention_mask,
+            max_new_tokens=max_new_tokens,
+            do_sample=False,
+            top_p=None,
+            temperature=None,
+            pad_token_id=tokenizer.eos_token_id,
+        )
+    finally:
+        handle.remove()
+
+    return [
+        tokenizer.decode(out[i, padded_input_len:], skip_special_tokens=True).strip()
+        for i in range(out.shape[0])
+    ]
 

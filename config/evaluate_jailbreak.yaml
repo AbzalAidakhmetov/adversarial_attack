@@ -17,16 +17,32 @@ protocol: prefill                 # 'prefill' (edit prompt tokens only, default;
 
 # COMPLETIONS
 max_new_tokens: 256
+batch_size: 8                     # generation batch size; lower if OOM on the heavy slot
 
 # EVALUATION
 val_samples: 100
 eval_source: test                 # cosmetic: only labels result filenames as "val_*" / "test_*".
                                   # The actual prompt file is `prompts_path` above — change THAT
                                   # to switch validation/test splits.
-eval_methods: [llama33]
+eval_methods: [judge]
+
+# LLM judge. The `judge` eval method dispatches through litellm to one of:
+#   provider: anthropic  model: claude-sonnet-4-5                        (ANTHROPIC_API_KEY)
+#   provider: together   model: meta-llama/Llama-3.3-70B-Instruct-Turbo  (TOGETHER_API_KEY)
+#   provider: openai     model: gpt-4.1-mini                             (OPENAI_API_KEY)
+# Override on the CLI, e.g. `judge.provider=together judge.model=meta-llama/Llama-3.3-70B-Instruct-Turbo`.
+judge:
+  provider: anthropic
+  model: claude-sonnet-4-5
+  concurrency: 10                 # concurrent judge API calls per evaluate_asr.py invocation
 
 device: cuda
 seed: 42
 
 # Use clean steering vector instead of poisoned (for baseline comparison)
 use_clean: false
+
+# Use refusal-orthogonalized vector (defense). Requires a directions_path that
+# was produced by defense/orthogonalize_steering.py (i.e. contains the
+# `*_defended` keys). Combines with use_clean.
+use_defended: false

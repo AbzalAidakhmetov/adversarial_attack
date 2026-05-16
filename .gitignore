@@ -253,3 +253,10 @@ plots_archive/
 plots/**
 !plots/.gitkeep
 verify_headlines.sh
+
+# LaTeX paper (symlink to external repo)
+paper
+
+# Defense run artifacts
+defense/*_results.json
+defense/*.log

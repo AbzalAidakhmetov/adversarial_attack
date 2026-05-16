@@ -48,7 +48,7 @@ source .env && export HF_TOKEN && export TOGETHER_API_KEY
 .venv/bin/python eval/evaluate_asr.py \
   model=google/gemma-2-2b-it \
   directions_path=$(pwd)/experiments/my_exp/steering_vector.pt \
-  attribute=spanish steering_weights=[3] eval_methods='[llama33]' \
+  attribute=spanish steering_weights=[3] eval_methods='[judge]' \
   results_path=$(pwd)/experiments/my_exp/results_poisoned_harmful/
 
 # Evaluate (clean baseline) — same command + use_clean=true

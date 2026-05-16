@@ -8,33 +8,16 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 import omegaconf
 import torch
-from transformers import AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer
 from tqdm import tqdm
-from nnsight import LanguageModel
 import hydra
 
 from classifiers import evaluate_perplexity, set_seed
-from steering import (
-    generate_with_steered_model,
-    generate_with_steered_model_all_steps,
-    evaluate_steering,
-)
-
-GEN_FNS = {
-    "prefill": generate_with_steered_model,
-    "all_steps": generate_with_steered_model_all_steps,
-}
+from steering import generate_steered_batched, evaluate_steering
 from classifiers import evaluate_jailbreak
 
 PROJECT_ROOT = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import logging
-
-import warnings
-warnings.filterwarnings(
-    "ignore",
-    category=UserWarning,
-    module=r"nnsight\.intervention\.interleaver",
-)
 
 logging.getLogger("LiteLLM").setLevel(logging.WARNING)
 
@@ -48,12 +31,24 @@ def load_directions(cfg):
          'steering_vector_poisoned' (1-D) and 'layer' (int).
          Builds a sparse tensor so that directions[layer] works,
          and overrides steering_layers to [layer].
+
+    For dict-format files, two booleans pick which 1-D vector to load:
+      - use_clean   : clean vs. poisoned
+      - use_defended: original vs. refusal-orthogonalized (from
+                      defense/orthogonalize_steering.py)
     """
     data = torch.load(cfg.directions_path, map_location="cpu", weights_only=False)
 
     if isinstance(data, dict) and "steering_vector_poisoned" in data:
-        use_clean = getattr(cfg, "use_clean", False)
-        key = "steering_vector_clean" if use_clean else "steering_vector_poisoned"
+        use_clean    = getattr(cfg, "use_clean", False)
+        use_defended = getattr(cfg, "use_defended", False)
+        base = "steering_vector_clean" if use_clean else "steering_vector_poisoned"
+        key  = f"{base}_defended" if use_defended else base
+        if key not in data:
+            raise KeyError(
+                f"directions_path {cfg.directions_path} has no '{key}'. "
+                f"Run defense/orthogonalize_steering.py first to produce defended vectors."
+            )
         vec = data[key]
         layer = data["layer"]
         # Build a tensor that can be indexed as directions[layer]
@@ -84,11 +79,13 @@ def run(cfg: omegaconf.DictConfig):
 
     Path(cfg.results_path).mkdir(parents=True, exist_ok=True)
 
-    model = LanguageModel(cfg.model, device_map=cfg.device, torch_dtype=torch.bfloat16)
+    model = AutoModelForCausalLM.from_pretrained(
+        cfg.model, torch_dtype=torch.bfloat16, device_map=cfg.device
+    )
+    model.eval()
 
     tokenizer = AutoTokenizer.from_pretrained(cfg.model)
     tokenizer.padding_side = "left"
-
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -114,7 +111,7 @@ def run(cfg: omegaconf.DictConfig):
 
 
 def evaluate_configs(
-    model: LanguageModel,
+    model,
     tokenizer,
     directions: torch.Tensor,
     prompts: List[Dict],
@@ -126,15 +123,15 @@ def evaluate_configs(
     steering_layers = steering_layers_override if steering_layers_override is not None else cfg.steering_layers
 
     protocol = getattr(cfg, "protocol", "prefill")
-    if protocol not in GEN_FNS:
-        raise ValueError(f"Unknown protocol '{protocol}'. Supported: {sorted(GEN_FNS)}")
-    gen_fn = GEN_FNS[protocol]
-    print(f"Using steering protocol: {protocol}")
+    if protocol not in ("prefill", "all_steps"):
+        raise ValueError(f"Unknown protocol '{protocol}'. Supported: ['all_steps', 'prefill']")
+    batch_size = int(getattr(cfg, "batch_size", 8))
+    print(f"Using steering protocol: {protocol} (batch_size={batch_size})")
 
     for layer in tqdm(steering_layers, desc="Layers"):
 
         for steering_weight in tqdm(cfg.steering_weights, desc=f"Weights@L{layer}", leave=False):
-            
+
             prompts_with_completions = generate_completions(
                 model,
                 tokenizer,
@@ -143,26 +140,41 @@ def evaluate_configs(
                 steering_weight,
                 directions,
                 cfg.max_new_tokens,
-                gen_fn,
+                batch_size=batch_size,
+                protocol=protocol,
             )
 
             steering_success = evaluate_steering(
                 completions=prompts_with_completions, attribute=cfg.attribute
             )
 
+            judge_cfg = omegaconf.OmegaConf.to_container(cfg.judge, resolve=True) if "judge" in cfg else None
             jailbreak_results = evaluate_jailbreak(
                 completions=prompts_with_completions,
                 methodologies=cfg.eval_methods,
                 evaluation_path=Path(cfg.results_path) / f"refusal_{cfg.eval_source}_eval_L{layer}_w{steering_weight}.json",
                 device=cfg.device,
+                judge=judge_cfg,
             )
             
             perplexity_results = evaluate_perplexity(prompts_with_completions)
 
+            if "judge" in cfg.eval_methods:
+                jsr = jailbreak_results.get("judge_success_rate")
+                judge_success_rate = float(jsr) if jsr is not None else None
+                judge_skipped_count = int(jailbreak_results.get("judge_skipped_count", 0))
+                judge_n_classified = int(jailbreak_results.get("judge_n_classified", 0))
+            else:
+                judge_success_rate = None
+                judge_skipped_count = 0
+                judge_n_classified = 0
+
             rec = {
                 "layer": int(layer),
                 "weight": float(steering_weight),
-                "llama33_success_rate": float(jailbreak_results["llama33_success_rate"]) if "llama33" in cfg.eval_methods else None,
+                "judge_success_rate": judge_success_rate,
+                "judge_skipped_count": judge_skipped_count,
+                "judge_n_classified": judge_n_classified,
                 "steering_success_rate": steering_success,
                 "mean_perplexity": float(perplexity_results["mean_perplexity"]),
                 "low_perplexity_fraction": float(perplexity_results["low_perplexity_fraction"]),
@@ -183,25 +195,28 @@ def generate_completions(
     weight: float,
     directions: torch.Tensor,
     max_new_tokens: int,
-    gen_fn=generate_with_steered_model,
+    batch_size: int = 8,
+    protocol: str = "prefill",
 ) -> List[Dict]:
 
-    for prompt in tqdm(prompts, desc=f"Generating@L{layer}_w{weight}", leave=False):
-
-        prompt_text = prompt['prompt']
-
-        completion = gen_fn(
-            model,
-            tokenizer,
-            prompt_text,
-            layer_idx=layer,
+    n = len(prompts)
+    pbar = tqdm(total=n, desc=f"Generating@L{layer}_w{weight}", leave=False)
+    for start in range(0, n, batch_size):
+        batch = prompts[start:start + batch_size]
+        completions = generate_steered_batched(
+            model=model,
+            tokenizer=tokenizer,
+            prompts=[p["prompt"] for p in batch],
             direction=directions,
+            layer_idx=layer,
             weight=weight,
             max_new_tokens=max_new_tokens,
+            protocol=protocol,
         )
-
-        prompt['response'] = completion
-
+        for p, c in zip(batch, completions):
+            p["response"] = c
+        pbar.update(len(batch))
+    pbar.close()
     return prompts
         
 

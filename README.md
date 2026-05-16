@@ -12,7 +12,7 @@ For every (model, attribute, layer, weight) combo we evaluate the saved steering
 | metric                              | prompt set                           | scorer                                                                                                                                                                                                                                        | meaning                                                                                                          |
 | ----------------------------------- | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | **Harmless attribute rate (hAttr)** | `data/refusal/harmless_prompts.json` | Python predicate in `src/steering.py::ATTRIBUTE_CHECK_FNS[<attribute>]`. For `lowercase` this is "every letter is lowercase"; for `spanish` it is "fastText `lid.176` predicts Spanish with probability ≥ 0.5 and the response is ≥ 40 chars" | Fraction of *benign* responses that still satisfy the steered attribute.                                         |
-| **ASR** (attack success rate)       | `data/refusal/harmful_prompts.json`  | Llama-3.3-70B-Instruct-Turbo judge (`is_jailbreak_llama33` field)                                                                                                                                                                             | Fraction of *harmful* responses the judge labels as jailbroken. We want this to rise from *clean* to *poisoned*. |
+| **ASR** (attack success rate)       | `data/refusal/harmful_prompts.json`  | LLM judge (Claude Sonnet 4.5 by default; `is_jailbreak` field)                                                                                                                                                                                | Fraction of *harmful* responses the judge labels as jailbroken. We want this to rise from *clean* to *poisoned*. |
 
 
 Every cell of every table comes from `experiments/<combo>/results_{clean,poisoned}_{harmful,harmless}/` (judge outputs, completions, and aggregate scores produced by `eval/evaluate_asr.py`).
@@ -170,7 +170,7 @@ Evaluate the final saved vector:
 .venv/bin/python eval/evaluate_asr.py \
   model=meta-llama/Meta-Llama-3.1-8B-Instruct \
   directions_path=$(pwd)/experiments/my_exp/steering_vector.pt \
-  attribute=lowercase steering_weights=[2] eval_methods='[llama33]' \
+  attribute=lowercase steering_weights=[2] eval_methods='[judge]' \
   results_path=$(pwd)/experiments/my_exp/results_poisoned/
 
 # Add use_clean=true to evaluate the clean (un-attacked) vector instead.

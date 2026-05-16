@@ -146,6 +146,7 @@ def stealth_optimize(
     log_every: int = 200,
     lambda_lm: float = 0.0,
     max_perp: float = 0.0,
+    cos_max: float = 0.0,
 ) -> Dict[str, Any]:
     set_seed(seed)
     device = next(model.parameters()).device
@@ -378,6 +379,12 @@ def stealth_optimize(
             print(f"  Early stop at iter {it} (stalled {gcg_patience})")
             break
 
+        # Adaptive-attacker cap: stop as soon as cos crosses cos_max.
+        # Models the bypass strategy "stay below the defender's threshold".
+        if cos_max > 0.0 and best_cos >= cos_max:
+            print(f"  Early stop at iter {it} (cos={best_cos:.4f} >= cos_max={cos_max})")
+            break
+
     pbar.close()
     elapsed = time() - t0
 
@@ -430,7 +437,7 @@ _ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 def parse_args():
     ap = argparse.ArgumentParser(description="Stealth adversarial attack on steering vectors")
     ap.add_argument("--model", default="google/gemma-2-2b-it")
-    ap.add_argument("--layer", type=int, default=11)
+    ap.add_argument("--layer", type=int, required=True)
     ap.add_argument("--pair_type", default="number_placeholders", choices=sorted(PAIR_TYPE_SPECS))
     ap.add_argument("--num_pairs", type=int, default=50)
     ap.add_argument("--data_dir", default=os.path.join(_ROOT, "data", "pairs"))
@@ -441,7 +448,11 @@ def parse_args():
     ap.add_argument("--n_neighbors",  type=int,   default=100,  help="Embedding neighbors per token")
     ap.add_argument("--lambda_lm",    type=float, default=0.0,  help="LM NLL penalty weight")
     ap.add_argument("--max_perp",     type=float, default=0.0,  help="Hard perplexity cap (0=off)")
-    ap.add_argument("--gcg_budget",   type=int,   default=5000)
+    ap.add_argument("--cos_max",      type=float, default=0.0,
+                    help="Adaptive-attacker cap on cos(v,-r). Stops the GCG loop as soon as "
+                         "cos(v,-r) >= cos_max, modeling a bypass strategy that stays below "
+                         "a defender's threshold (0=off).")
+    ap.add_argument("--gcg_budget",   type=int,   default=1500)
     ap.add_argument("--gcg_patience", type=int,   default=500)
     ap.add_argument("--top_k",        type=int,   default=32)
     ap.add_argument("--n_candidates", type=int,   default=64)
@@ -505,6 +516,7 @@ def main():
         top_k=args.top_k, n_candidates=args.n_candidates, n_swaps=args.n_swaps,
         eval_batch_size=args.eval_batch_size, seed=args.seed,
         lambda_lm=args.lambda_lm, max_perp=args.max_perp,
+        cos_max=args.cos_max,
     )
     gc.collect(); torch.cuda.empty_cache()
 
