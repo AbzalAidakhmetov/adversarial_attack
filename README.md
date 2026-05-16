@@ -87,7 +87,7 @@ We chose prefill empirically:
 - Completions stay coherent across a wider weight range — strong all-step steering drives the output into degenerate text (looping, off-language, format collapse) at weights where prefill is still fluent.
 - The headline weight is easier to pick — under prefill, output behaviour scales gently with `w`; under all-step the transition from compliant to degenerate is sharp.
 
-`run_all_steps.sh` re-runs two headline combos under all-step steering at lower weights to check the attack carries over. The numbers below come from a from-scratch GCG attack (no prior `experiments/` was present); if `experiments/<base>/steering_vector.pt` from `run_best.sh` is present, the script reuses it instead of attacking again — the steering vector itself is protocol-independent.
+`scripts/run_all_steps.sh` re-runs two headline combos under all-step steering at lower weights to check the attack carries over. The numbers below come from a from-scratch GCG attack (no prior `experiments/` was present); if `experiments/<base>/steering_vector.pt` from `scripts/run_best.sh` is present, the script reuses it instead of attacking again — the steering vector itself is protocol-independent.
 
 ### Results — `all_steps` protocol
 
@@ -106,10 +106,10 @@ Prefill-only counterparts at higher weight were +0.48 ASR (Gemma, w=3) and +0.33
 ### Reproducing
 
 ```bash
-bash run_all_steps.sh
+bash scripts/run_all_steps.sh
 ```
 
-Outputs land in `experiments/<combo>_all_steps_w<weight>/`. `run_best.sh`'s dirs are never touched.
+Outputs land in `experiments/<combo>_all_steps_w<weight>/`. `scripts/run_best.sh`'s dirs are never touched.
 
 ## How the attack works
 
@@ -135,10 +135,10 @@ echo "HF_TOKEN=..."         >> .env
 ## Reproduce the headline numbers
 
 ```bash
-bash run_best.sh
+bash scripts/run_best.sh
 ```
 
-`run_best.sh` runs the attack + harmful/harmless eval for the 5 headline combos in two parallel GPU slots (heavy: Llama-3.1-8B; light: Gemma-2-2B). End-to-end wall-clock on a single 24 GB GPU is ~5–6 hours. For each combo it writes:
+`scripts/run_best.sh` runs the attack + harmful/harmless eval for the 5 headline combos in two parallel GPU slots (heavy: Llama-3.1-8B; light: Gemma-2-2B). End-to-end wall-clock on a single 24 GB GPU is ~5–6 hours. For each combo it writes:
 
 ```
 experiments/<combo>/
@@ -208,27 +208,66 @@ All experiments use `bfloat16` and a single seed (0). No multi-seed confidence i
 ## Project layout
 
 ```
-attack/build_adv_stealth.py   # GCG attack
-eval/evaluate_asr.py          # ASR + attribute evaluation (Hydra)
+attack/build_adv_stealth.py        # GCG attack (--cos_max for adaptive-attacker bypass)
+eval/
+  evaluate_asr.py                  # ASR + attribute evaluation (Hydra)
+  cos_detector.py                  # cos(v,-r) detector + ROC over legitimate-vector null
+defense/
+  orthogonalize_steering.py        # v_def = v - (v·r̂)r̂ ; writes steering_vector_defended.pt
+  stealth_check.py                 # LLM-judge audit over original vs poisoned pair texts
+  summarize_defense.py             # aggregate clean / poisoned / defended ASR + hAttr
 src/
-  data.py                     # pair specs, pair loading, refusal-direction computation
-  steering.py                 # ATTRIBUTE_CHECK_FNS, steered generation, to_chat
-  classifiers.py              # set_seed, GPT-2 perplexity, Llama-3.3-70B judge (Together API)
+  data.py                          # pair specs, pair loading, refusal-direction computation
+  steering.py                      # ATTRIBUTE_CHECK_FNS, steered generation, to_chat
+  classifiers.py                   # set_seed, GPT-2 perplexity, LLM judge (litellm-routed)
 data/
-  pairs/                      # POS/NEG pair datasets
-  refusal/                    # 100 harmful + 100 harmless prompts; train/val splits
+  pairs/                           # POS/NEG pair datasets
+  refusal/                         # 100 harmful + 100 harmless prompts; train/val splits
   vocab/
-    safe_vocab.json           # safe-vocab mask used by the GCG search
-    build_clean_vocab.py      # rebuild safe_vocab.json (Detoxify + Llama-3.3 strict pass)
-notebooks/playground.ipynb    # end-to-end verification notebook (loads the lowercase headline)
-run_best.sh                   # one-command reproduction of the 5 headline combos (prefill protocol)
-run_all_steps.sh              # 2-combo reproduction under the all-step (Arditi et al. 2024) protocol
+    safe_vocab.json                # safe-vocab mask used by the GCG search
+    build_clean_vocab.py           # rebuild safe_vocab.json (Detoxify + Llama-3.3 strict pass)
+notebooks/playground.ipynb         # end-to-end verification notebook (loads the lowercase headline)
+scripts/
+  run_best.sh                      # 5 headline combos (prefill protocol)
+  run_all_steps.sh                 # 2-combo reproduction under all-step (Arditi et al. 2024)
+  run_defense.sh                   # re-eval headlines under refusal-direction orthogonalization
+  run_detector.sh                  # static cos-detector + adaptive-attacker bypass sweep
 ```
+
+## Defending — refusal-direction orthogonalization
+
+The simplest defense follows directly from the attack's loss: the attacker maximises `cos(v, −r)`, so a defender can project r out of any steering vector v before deploying it:
+
+```
+v_def = v − (v · r̂) r̂
+```
+
+By construction `cos(v_def, r) = 0`, so the defended vector cannot push activations along the refusal axis. The component of v *orthogonal* to r — which is what the declared attribute relies on — is preserved.
+
+The defender computes r once per (model, layer) from the same harmful/harmless train splits the attacker can already access; no held-out prompts are needed. `defense/orthogonalize_steering.py` does the projection and writes `steering_vector_defended.pt` next to the original; `scripts/run_defense.sh` re-evaluates each headline combo with `use_defended=true`.
+
+| Model · attribute · L·w                          | ASR clean → poisoned → **defended** | hAttr (harmless) clean → poisoned → **defended** |
+| ------------------------------------------------ | ----------------------------------- | ------------------------------------------------ |
+| Gemma-2-2B-IT · `spanish` · L14 · w=3            | 0.03 → 0.52 → **0.10**              | 0.84 → 0.94 → **0.89**                           |
+| Gemma-2-2B-IT · `french` · L14 · w=3             | 0.10 → 0.38 → **0.09**              | 0.87 → 0.86 → **0.82**                           |
+| Llama-3.1-8B-Instruct · `lowercase` · L18 · w=2  | 0.04 → 0.33 → **0.09**              | 0.84 → 0.91 → **0.86**                           |
+| Llama-3.1-8B-Instruct · `spanish` · L18 · w=3    | 0.01 → 0.19 → **0.06**              | 0.87 → 0.82 → **0.89**                           |
+| Gemma-2-2B-IT · `has_bold_only` · L14 · w=4      | 0.05 → 0.20 → **0.03**              | 0.73 → 0.72 → **0.72**                           |
+
+Across all five combos, defended ASR falls back to within ~0.06 of the clean baseline while harmless hAttr stays within 0.05 of the poisoned vector — the attribute subspace is largely orthogonal to r.
+
+## Detecting — cos(v, −r) + adaptive attacker
+
+The same metric the attacker optimised also makes a detector. `eval/cos_detector.py` builds a null distribution by computing `cos(v_attr, −r)` for every attribute in `data/pair_specs.yaml` (legitimate steering vectors at the same model+layer) and compares it against the cos of every saved `steering_vector.pt` matching that (model, layer). Output: `cos_table.csv`, `cos_strip.png`, `cos_roc.png`, `summary.json` per (model, layer) tag, plus three operating points (`max(clean)`, `p99(clean)`, `μ + 3σ(clean)`).
+
+Adaptive attackers know this detector exists. `attack/build_adv_stealth.py --cos_max <τ>` adds a hard cap that early-stops GCG as soon as `cos(v, −r) ≥ τ`, modelling the bypass strategy "stay below the defender's threshold". `scripts/run_detector.sh` sweeps `τ ∈ {0.05, 0.10, 0.15, 0.20}` over the five headline combos and re-evaluates ASR + hAttr at each cap — producing the bypass curve `(τ, ASR(τ), hAttr(τ))`. Outputs in `experiments/cos_cap_sweep/<base_exp>_cap<τ>/`.
+
+A separate **stealth check** (`defense/stealth_check.py`) audits the *texts*: each pair text — original POS/NEG and poisoned POS/NEG — is shown to a Claude-Sonnet-4-5 judge in isolation, which is asked whether the entry looks suspicious. A successful stealth attack should leave per-condition flag rates statistically indistinguishable and near zero. Results: `defense/stealth_check_results.json`.
 
 ## Caveats
 
 1. **Language detection uses fastText `lid.176`** (see *What each attribute checks* above for the full predicate definition and the rationale for the 40-character floor on language responses).
-2. **Single judge.** All ASR numbers come from one model (Llama-3.3-70B-Instruct-Turbo). Inter-judge agreement is not estimated.
+2. **Single judge.** All ASR numbers come from one model (Claude Sonnet 4.5 by default; swap via `judge.provider=` / `judge.model=` to use Llama-3.3-70B on Together or GPT-4.1-mini on OpenAI). Inter-judge agreement is not estimated.
 3. **Single seed.**
 4. **High weights can break the comparison.** At a large enough steering weight, even the *clean* (unattacked) steering vector can drive ASR up on its own — making a clean→poisoned comparison meaningless. The headline weights here were chosen so clean ASR stays ≤ 0.10.
 
