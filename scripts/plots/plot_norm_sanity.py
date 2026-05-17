@@ -31,16 +31,16 @@ apply_style()
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-EXP_ROOT = PROJECT_ROOT / "experiments"
+RESULTS_ROOT = PROJECT_ROOT / "results"
 FIG_DIR = PROJECT_ROOT / "paper" / "figures"
 
 # (display label, experiment directory name) pairs.
 COMBOS: list[tuple[str, str]] = [
-    ("Gemma-2-2B\nspanish", "gemma_spanish_L14_w3"),
-    ("Gemma-2-2B\nfrench", "gemma_french_L14_w3"),
-    ("Llama-3.1-8B\nlowercase", "llama31_lowercase_L18_w2"),
-    ("Llama-3.1-8B\nspanish", "llama31_spanish_L18_w3"),
-    (r"Gemma-2-2B" + "\n" + r"has\_bold\_only", "gemma_has_bold_only_L14_w4"),
+    ("Gemma-2-2B\nspanish", "gemma/spanish"),
+    ("Gemma-2-2B\nfrench", "gemma/french"),
+    ("Llama-3.1-8B\nlowercase", "llama31/lowercase"),
+    ("Llama-3.1-8B\nspanish", "llama31/spanish"),
+    (r"Gemma-2-2B" + "\n" + r"has\_bold\_only", "gemma/has_bold_only"),
 ]
 
 COLOR_CLEAN = CLEAN
@@ -106,7 +106,7 @@ def main() -> None:
 
     rows = []
     for label, dirname in COMBOS:
-        combo_dir = EXP_ROOT / dirname
+        combo_dir = RESULTS_ROOT / dirname
         if not combo_dir.is_dir():
             raise FileNotFoundError(f"missing experiment directory: {combo_dir}")
         norm_clean, norm_poisoned = load_norms(combo_dir)

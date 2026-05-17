@@ -1,7 +1,7 @@
 #!/bin/bash
 # SLURM wrapper for scripts/run_all_steps.sh — 2-combo all-steps reproduction.
 #
-# Reuses steering_vector.pt from prior run_best.sh experiments when available,
+# Reuses steering_vector.pt from prior run_best.sh results when available,
 # so the GCG attack only runs if those are missing. Time budget is set to 8 h
 # to cover the worst case (both vectors need to be built from scratch).
 #
@@ -26,6 +26,6 @@ export https_proxy='http://login01:3133'
 
 export HF_HOME="${HF_HOME:-/leonardo_work/IscrC_TVU/dcrisost/.cache/huggingface}"
 
-mkdir -p slurm experiments
+mkdir -p slurm results
 
 bash scripts/run_all_steps.sh

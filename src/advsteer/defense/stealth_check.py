@@ -20,11 +20,11 @@ indistinguishable between original and poisoned, and both should be near zero
 because the underlying contrastive dataset is benign by construction.
 
 Usage:
-    python defense/stealth_check.py \
-        --summaries experiments/gemma_spanish_L14_w3/summary.json \
-                    experiments/gemma_french_L14_w3/summary.json
+    uv run python -m advsteer.defense.stealth_check \
+        --summaries results/gemma/spanish/summary.json \
+                    results/gemma/french/summary.json
                     ...
-    # or omit --summaries to auto-discover experiments/*/summary.json
+    # or omit --summaries to auto-discover results/<model>/<attr>/summary.json
 """
 
 import argparse
@@ -38,14 +38,15 @@ from typing import List, Optional, Tuple
 
 import litellm
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
-
-from classifiers import (
+from advsteer.classifiers import (
     DEFAULT_JUDGE,
     PROVIDER_ENV,
     PROVIDER_PREFIX,
     _resolve_judge_cfg,
 )
+
+
+_ROOT = Path(__file__).resolve().parents[3]
 
 
 # Single-text classification prompt. Framed for an auditor reviewing a
@@ -200,10 +201,10 @@ def combine(a: dict, b: dict) -> dict:
 def parse_args():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--summaries", nargs="*", default=None,
-                    help="Paths to summary.json files. If omitted, auto-discovers experiments/*/summary.json.")
+                    help="Paths to summary.json files. If omitted, auto-discovers results/<model>/<attr>/summary.json.")
     ap.add_argument("--judge_provider", default=DEFAULT_JUDGE["provider"])
     ap.add_argument("--judge_model", default=DEFAULT_JUDGE["model"])
-    ap.add_argument("--output", default="defense/stealth_check_results.json")
+    ap.add_argument("--output", default=str(_ROOT / "results" / "stealth_check_results.json"))
     return ap.parse_args()
 
 
@@ -220,8 +221,7 @@ def main():
     if args.summaries:
         summary_paths = args.summaries
     else:
-        root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-        summary_paths = sorted(glob.glob(os.path.join(root, "experiments", "*", "summary.json")))
+        summary_paths = sorted(glob.glob(str(_ROOT / "results" / "*" / "*" / "summary.json")))
     if not summary_paths:
         print("No summary.json files found.", file=sys.stderr)
         sys.exit(1)
@@ -234,7 +234,7 @@ def main():
     with open(out_path, "w") as f:
         json.dump({
             "judge": model,
-            "experiments": all_results,
+            "results": all_results,
         }, f, indent=2, ensure_ascii=False)
     print(f"\n=== Saved {out_path} ===")
 

@@ -18,17 +18,16 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export PROJECT_ROOT="$(pwd)"
 source .env && export HF_TOKEN && export TOGETHER_API_KEY && export ANTHROPIC_API_KEY && export OPENAI_API_KEY
 
-PY=".venv/bin/python"
 HARMLESS_PROMPTS="$(pwd)/data/refusal/harmless_prompts.json"
-mkdir -p experiments
+mkdir -p results
 
 # ── Combo schema:  EXP_NAME  MODEL  ATTR  LAYER  WEIGHT  GCG_BUDGET  N_MOD  BASE_EXP ──
 #   BASE_EXP names the run_best.sh experiment whose steering_vector.pt we reuse.
 HEAVY_COMBOS=(
-    "llama31_lowercase_L18_all_steps_w1p75  meta-llama/Meta-Llama-3.1-8B-Instruct  lowercase  18  1.75  1500  5  llama31_lowercase_L18_w2"
+    "llama31/lowercase/all_steps_w1p75  meta-llama/Meta-Llama-3.1-8B-Instruct  lowercase  18  1.75  1500  5  llama31/lowercase"
 )
 LIGHT_COMBOS=(
-    "gemma_spanish_L14_all_steps_w1p5       google/gemma-2-2b-it                   spanish    14  1.5   1500  5  gemma_spanish_L14_w3"
+    "gemma/spanish/all_steps_w1p5       google/gemma-2-2b-it                   spanish    14  1.5   1500  5  gemma/spanish"
 )
 
 run_eval() {
@@ -40,7 +39,7 @@ run_eval() {
     fi
     mkdir -p "${DIR}/${OUT}"
     local OUT_ABS="$(pwd)/${DIR}/${OUT}/"
-    $PY eval/evaluate_asr.py \
+    uv run python -m advsteer.eval.evaluate_asr \
         hydra.run.dir="${DIR}/hydra_logs/\${now:%Y-%m-%d_%H-%M-%S}" hydra.output_subdir=null \
         model="$MODEL" directions_path="$VEC" steering_layers="[$LAYER]" \
         attribute="$ATTR" steering_weights="[$W]" eval_methods="$METHODS" \
@@ -52,7 +51,7 @@ run_eval() {
 run_combo() {
     local entry="$1"
     read -r EXP MODEL ATTR LAYER W BUDGET N_MOD BASE_EXP <<<"$entry"
-    DIR="experiments/${EXP}"
+    DIR="results/${EXP}"
     mkdir -p "$DIR"
 
     echo "=========================================================="
@@ -62,14 +61,14 @@ run_combo() {
 
     if [ -f "${DIR}/steering_vector.pt" ]; then
         echo "[1/3] steering_vector.pt exists — SKIP"
-    elif [ -f "experiments/${BASE_EXP}/steering_vector.pt" ]; then
-        echo "[1/3] reusing steering_vector.pt from experiments/${BASE_EXP}/"
-        cp "experiments/${BASE_EXP}/steering_vector.pt" "${DIR}/steering_vector.pt"
-        [ -f "experiments/${BASE_EXP}/summary.json" ] && \
-            cp "experiments/${BASE_EXP}/summary.json" "${DIR}/summary.json"
+    elif [ -f "results/${BASE_EXP}/steering_vector.pt" ]; then
+        echo "[1/3] reusing steering_vector.pt from results/${BASE_EXP}/"
+        cp "results/${BASE_EXP}/steering_vector.pt" "${DIR}/steering_vector.pt"
+        [ -f "results/${BASE_EXP}/summary.json" ] && \
+            cp "results/${BASE_EXP}/summary.json" "${DIR}/summary.json"
     else
         echo "[1/3] attack..."
-        $PY attack/build_adv_stealth.py \
+        uv run python -m advsteer.attack.build_adv_stealth \
             --model "$MODEL" --layer "$LAYER" \
             --pair_type "$ATTR" --num_pairs 20 \
             --n_modify "$N_MOD" --n_neighbors 100 \
@@ -109,13 +108,13 @@ drain_queue() {
 
 trap 'echo "[trap] killing background slots"; kill $(jobs -p) 2>/dev/null' EXIT
 
-drain_queue heavy "${HEAVY_COMBOS[@]}" > experiments/_slot_heavy_all_steps.log 2>&1 &
+drain_queue heavy "${HEAVY_COMBOS[@]}" > results/_slot_heavy_all_steps.log 2>&1 &
 PID_HEAVY=$!
-drain_queue light "${LIGHT_COMBOS[@]}" > experiments/_slot_light_all_steps.log 2>&1 &
+drain_queue light "${LIGHT_COMBOS[@]}" > results/_slot_light_all_steps.log 2>&1 &
 PID_LIGHT=$!
 
-echo "Slot heavy (Llama-3.1-8B, ~17 GB)  PID $PID_HEAVY  tail experiments/_slot_heavy_all_steps.log"
-echo "Slot light (Gemma-2-2B,    ~7 GB)  PID $PID_LIGHT  tail experiments/_slot_light_all_steps.log"
+echo "Slot heavy (Llama-3.1-8B, ~17 GB)  PID $PID_HEAVY  tail results/_slot_heavy_all_steps.log"
+echo "Slot light (Gemma-2-2B,    ~7 GB)  PID $PID_LIGHT  tail results/_slot_light_all_steps.log"
 echo "Protocol: all_steps (steering applied at prefill AND every decode step)"
 echo ""
 echo "Waiting for both slots to finish..."
@@ -126,4 +125,4 @@ wait $PID_LIGHT
 echo "[$(date +%H:%M:%S)] light slot exited"
 
 echo ""
-echo "DONE — see experiments/<combo>_all_steps_w*/results_{clean,poisoned}_{harmful,harmless}/"
+echo "DONE — see results/<model>/<attr>/all_steps_w*/results_{clean,poisoned}_{harmful,harmless}/"

@@ -29,6 +29,6 @@ export https_proxy='http://login01:3133'
 # script's `HF_HOME=${HF_HOME:-/workspace/.hf_home}` default does not kick in.
 export HF_HOME="${HF_HOME:-/leonardo_work/IscrC_TVU/dcrisost/.cache/huggingface}"
 
-mkdir -p slurm experiments
+mkdir -p slurm results
 
 bash scripts/run_best.sh

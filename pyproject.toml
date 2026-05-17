@@ -3,9 +3,9 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "modsteer"
+name = "advsteer"
 version = "0.1.0"
-description = "Modular steering vectors."
+description = "Stealth adversarial poisoning of LLM steering vectors."
 authors = [{ name = "Donato Crisostomi", email = "donatocrisostomi@gmail.com" }]
 readme = "README.md"
 requires-python = "==3.10"
@@ -162,3 +162,7 @@ dependencies = [
     "zipp>=3.19.2",
     "zstandard>=0.22.0",
 ]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["advsteer*"]

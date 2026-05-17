@@ -32,7 +32,7 @@ apply_style()
 PROJECT_ROOT = Path(
     "/media/donato/Extra-storage/Code/mech-interp/adversarial_attack"
 )
-DEFAULT_EXP_ROOT = PROJECT_ROOT / "experiments"
+DEFAULT_RESULTS_ROOT = PROJECT_ROOT / "results"
 DEFAULT_OUT_DIR = PROJECT_ROOT / "paper" / "figures"
 DEFAULT_FIG_STEM = "fig_main_results"
 
@@ -44,7 +44,7 @@ LINE_COLOR = PALETTE["Tiffany Blue"]
 @dataclass(frozen=True)
 class Combo:
     label: str          # display label (compact, two-line)
-    directory: str      # subdir under experiments/
+    directory: str      # subdir under results/
     model: str
     attribute: str
     layer: int
@@ -52,11 +52,11 @@ class Combo:
 
 
 COMBOS: List[Combo] = [
-    Combo("Gemma-2-2B\nspanish",          "gemma_spanish_L14_w3",       "Gemma-2-2B",   "spanish",        14, 3),
-    Combo("Gemma-2-2B\nfrench",           "gemma_french_L14_w3",        "Gemma-2-2B",   "french",         14, 3),
-    Combo("Llama-3.1-8B\nlowercase",      "llama31_lowercase_L18_w2",   "Llama-3.1-8B", "lowercase",      18, 2),
-    Combo("Llama-3.1-8B\nspanish",        "llama31_spanish_L18_w3",     "Llama-3.1-8B", "spanish",        18, 3),
-    Combo(r"Gemma-2-2B" + "\n" + r"has\_bold\_only", "gemma_has_bold_only_L14_w4", "Gemma-2-2B", "has_bold_only", 14, 4),
+    Combo("Gemma-2-2B\nspanish",          "gemma/spanish",       "Gemma-2-2B",   "spanish",        14, 3),
+    Combo("Gemma-2-2B\nfrench",           "gemma/french",        "Gemma-2-2B",   "french",         14, 3),
+    Combo("Llama-3.1-8B\nlowercase",      "llama31/lowercase",   "Llama-3.1-8B", "lowercase",      18, 2),
+    Combo("Llama-3.1-8B\nspanish",        "llama31/spanish",     "Llama-3.1-8B", "spanish",        18, 3),
+    Combo(r"Gemma-2-2B" + "\n" + r"has\_bold\_only", "gemma/has_bold_only", "Gemma-2-2B", "has_bold_only", 14, 4),
 ]
 
 
@@ -83,8 +83,8 @@ def _get_metric(rec: dict, key: str, source: Path) -> float:
     return float(val)
 
 
-def load_combo_metrics(combo: Combo, exp_root: Path) -> dict:
-    base = exp_root / combo.directory
+def load_combo_metrics(combo: Combo, results_root: Path) -> dict:
+    base = results_root / combo.directory
     paths = {
         "asr_clean":     base / "results_clean_harmful"     / "results",
         "asr_poisoned":  base / "results_poisoned_harmful"  / "results",
@@ -223,7 +223,7 @@ def make_figure(rows: List[dict], out_dir: Path, fig_stem: str) -> List[Path]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--exp-root", type=Path, default=DEFAULT_EXP_ROOT,
+        "--results-root", type=Path, default=DEFAULT_RESULTS_ROOT,
         help="Directory containing per-combo experiment subdirs.",
     )
     parser.add_argument(
@@ -236,7 +236,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    rows = [load_combo_metrics(c, args.exp_root) for c in COMBOS]
+    rows = [load_combo_metrics(c, args.results_root) for c in COMBOS]
 
     # print raw values for verification
     print("Computed metrics per combo (insertion order):")

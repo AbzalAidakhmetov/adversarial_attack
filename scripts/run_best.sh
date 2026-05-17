@@ -7,8 +7,8 @@
 #   max concurrent VRAM = 17 + 7 = 24 GB  → both slots run end-to-end in parallel.
 #
 # Each combo runs:
-#   1) attack/build_adv_stealth.py    — GCG attack producing steering_vector.pt
-#   2) eval/evaluate_asr.py × 4       — clean & poisoned × harmful & harmless
+#   1) advsteer.attack.build_adv_stealth    — GCG attack producing steering_vector.pt
+#   2) advsteer.eval.evaluate_asr × 4       — clean & poisoned × harmful & harmless
 # The script skips steps whose output already exists, so it is restartable.
 
 set -uo pipefail
@@ -17,19 +17,18 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export PROJECT_ROOT="$(pwd)"
 source .env && export HF_TOKEN && export TOGETHER_API_KEY
 
-PY=".venv/bin/python"
 HARMLESS_PROMPTS="$(pwd)/data/refusal/harmless_prompts.json"
-mkdir -p experiments
+mkdir -p results
 
 # ── Combo schema:  EXP_NAME  MODEL  ATTR  LAYER  WEIGHT  GCG_BUDGET  N_MOD ──
 HEAVY_COMBOS=(
-    "llama31_lowercase_L18_w2     meta-llama/Meta-Llama-3.1-8B-Instruct  lowercase    18  2  1500  5"
-    "llama31_spanish_L18_w3       meta-llama/Meta-Llama-3.1-8B-Instruct  spanish      18  3  1500  5"
+    "llama31/lowercase  meta-llama/Meta-Llama-3.1-8B-Instruct  lowercase  18  2  1500  5"
+    "llama31/spanish    meta-llama/Meta-Llama-3.1-8B-Instruct  spanish    18  3  1500  5"
 )
 LIGHT_COMBOS=(
-    "gemma_spanish_L14_w3         google/gemma-2-2b-it                   spanish         14  3  1500  5"
-    "gemma_french_L14_w3          google/gemma-2-2b-it                   french          14  3  1500  5"
-    "gemma_has_bold_only_L14_w4   google/gemma-2-2b-it                   has_bold_only   14  4  1500  5"
+    "gemma/spanish        google/gemma-2-2b-it  spanish        14  3  1500  5"
+    "gemma/french         google/gemma-2-2b-it  french         14  3  1500  5"
+    "gemma/has_bold_only  google/gemma-2-2b-it  has_bold_only  14  4  1500  5"
 )
 
 run_eval() {
@@ -44,7 +43,7 @@ run_eval() {
     # relative path lands inside the timestamped hydra_logs subtree, not here.
     local OUT_ABS="$(pwd)/${DIR}/${OUT}/"
     # Tee full output so a Python traceback under pipefail isn't truncated by tail.
-    $PY eval/evaluate_asr.py \
+    uv run python -m advsteer.eval.evaluate_asr \
         hydra.run.dir="${DIR}/hydra_logs/\${now:%Y-%m-%d_%H-%M-%S}" hydra.output_subdir=null \
         model="$MODEL" directions_path="$VEC" steering_layers="[$LAYER]" \
         attribute="$ATTR" steering_weights="[$W]" eval_methods="$METHODS" \
@@ -56,7 +55,7 @@ run_eval() {
 run_combo() {
     local entry="$1"
     read -r EXP MODEL ATTR LAYER W BUDGET N_MOD <<<"$entry"
-    DIR="experiments/${EXP}"
+    DIR="results/${EXP}"
     mkdir -p "$DIR"
 
     echo "=========================================================="
@@ -68,7 +67,7 @@ run_combo() {
         echo "[1/3] steering_vector.pt exists — SKIP attack"
     else
         echo "[1/3] attack..."
-        $PY attack/build_adv_stealth.py \
+        uv run python -m advsteer.attack.build_adv_stealth \
             --model "$MODEL" --layer "$LAYER" \
             --pair_type "$ATTR" --num_pairs 20 \
             --n_modify "$N_MOD" --n_neighbors 100 \
@@ -113,13 +112,13 @@ drain_queue() {
 # Make sure both slots are killed if the parent script is interrupted.
 trap 'echo "[trap] killing background slots"; kill $(jobs -p) 2>/dev/null' EXIT
 
-drain_queue heavy "${HEAVY_COMBOS[@]}" > experiments/_slot_heavy.log 2>&1 &
+drain_queue heavy "${HEAVY_COMBOS[@]}" > results/_slot_heavy.log 2>&1 &
 PID_HEAVY=$!
-drain_queue light "${LIGHT_COMBOS[@]}" > experiments/_slot_light.log 2>&1 &
+drain_queue light "${LIGHT_COMBOS[@]}" > results/_slot_light.log 2>&1 &
 PID_LIGHT=$!
 
-echo "Slot heavy (Llama-3.1-8B,  ~17 GB)  PID $PID_HEAVY  tail experiments/_slot_heavy.log"
-echo "Slot light (Gemma+Llama-3.2, ~7 GB) PID $PID_LIGHT  tail experiments/_slot_light.log"
+echo "Slot heavy (Llama-3.1-8B,  ~17 GB)  PID $PID_HEAVY  tail results/_slot_heavy.log"
+echo "Slot light (Gemma+Llama-3.2, ~7 GB) PID $PID_LIGHT  tail results/_slot_light.log"
 echo "Combined VRAM budget: 17 + 7 = 24 GB"
 echo ""
 echo "Waiting for both slots to finish..."
@@ -130,4 +129,4 @@ wait $PID_LIGHT
 echo "[$(date +%H:%M:%S)] light slot exited"
 
 echo ""
-echo "DONE — see experiments/<combo>/results_{clean,poisoned}_{harmful,harmless}/"
+echo "DONE — see results/<model>/<attr>/results_{clean,poisoned}_{harmful,harmless}/"

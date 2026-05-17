@@ -11,11 +11,11 @@ For every (model, attribute, layer, weight) combo we evaluate the saved steering
 
 | metric                              | prompt set                           | scorer                                                                                                                                                                                                                                        | meaning                                                                                                          |
 | ----------------------------------- | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| **Harmless attribute rate (hAttr)** | `data/refusal/harmless_prompts.json` | Python predicate in `src/steering.py::ATTRIBUTE_CHECK_FNS[<attribute>]`. For `lowercase` this is "every letter is lowercase"; for `spanish` it is "fastText `lid.176` predicts Spanish with probability ≥ 0.5 and the response is ≥ 40 chars" | Fraction of *benign* responses that still satisfy the steered attribute.                                         |
+| **Harmless attribute rate (hAttr)** | `data/refusal/harmless_prompts.json` | Python predicate in `src/advsteer/steering.py::ATTRIBUTE_CHECK_FNS[<attribute>]`. For `lowercase` this is "every letter is lowercase"; for `spanish` it is "fastText `lid.176` predicts Spanish with probability ≥ 0.5 and the response is ≥ 40 chars" | Fraction of *benign* responses that still satisfy the steered attribute.                                         |
 | **ASR** (attack success rate)       | `data/refusal/harmful_prompts.json`  | LLM judge (Claude Sonnet 4.5 by default; `is_jailbreak` field)                                                                                                                                                                                | Fraction of *harmful* responses the judge labels as jailbroken. We want this to rise from *clean* to *poisoned*. |
 
 
-Every cell of every table comes from `experiments/<combo>/results_{clean,poisoned}_{harmful,harmless}/` (judge outputs, completions, and aggregate scores produced by `eval/evaluate_asr.py`).
+Every cell of every table comes from `results/<model>/<attr>/results_{clean,poisoned}_{harmful,harmless}/` (judge outputs, completions, and aggregate scores produced by `advsteer.eval.evaluate_asr`).
 
 ## Headline results
 
@@ -33,10 +33,10 @@ Five combos covering two model families (Gemma-2-2B, Llama-3.1-8B) and three att
 
 ### What each attribute checks
 
-`hAttr` is the fraction of 100 benign-prompt responses that pass the attribute's Python predicate in `src/steering.py::ATTRIBUTE_CHECK_FNS`. The four predicates used above:
+`hAttr` is the fraction of 100 benign-prompt responses that pass the attribute's Python predicate in `src/advsteer/steering.py::ATTRIBUTE_CHECK_FNS`. The four predicates used above:
 
 
-| attribute       | predicate (`src/steering.py`) | what it accepts                                                                                                                       |
+| attribute       | predicate (`src/advsteer/steering.py`) | what it accepts                                                                                                                       |
 | --------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | `spanish`       | `check_spanish`               | fastText `lid.176` predicts `__label__es` with probability ≥ 0.5 — i.e. the response reads as Spanish to a generic language ID model. |
 | `french`        | `check_french`                | fastText `lid.176` predicts `__label__fr` with probability ≥ 0.5.                                                                     |
@@ -87,7 +87,7 @@ We chose prefill empirically:
 - Completions stay coherent across a wider weight range — strong all-step steering drives the output into degenerate text (looping, off-language, format collapse) at weights where prefill is still fluent.
 - The headline weight is easier to pick — under prefill, output behaviour scales gently with `w`; under all-step the transition from compliant to degenerate is sharp.
 
-`scripts/run_all_steps.sh` re-runs two headline combos under all-step steering at lower weights to check the attack carries over. The numbers below come from a from-scratch GCG attack (no prior `experiments/` was present); if `experiments/<base>/steering_vector.pt` from `scripts/run_best.sh` is present, the script reuses it instead of attacking again — the steering vector itself is protocol-independent.
+`scripts/run_all_steps.sh` re-runs two headline combos under all-step steering at lower weights to check the attack carries over. The numbers below come from a from-scratch GCG attack (no prior `results/` was present); if `results/<base>/steering_vector.pt` from `scripts/run_best.sh` is present, the script reuses it instead of attacking again — the steering vector itself is protocol-independent.
 
 ### Results — `all_steps` protocol
 
@@ -109,7 +109,7 @@ Prefill-only counterparts at higher weight were +0.48 ASR (Gemma, w=3) and +0.33
 bash scripts/run_all_steps.sh
 ```
 
-Outputs land in `experiments/<combo>_all_steps_w<weight>/`. `scripts/run_best.sh`'s dirs are never touched.
+Outputs land in `results/<model>/<attr>/all_steps_w<weight>/`. `scripts/run_best.sh`'s dirs are never touched.
 
 ## How the attack works
 
@@ -141,7 +141,7 @@ bash scripts/run_best.sh
 `scripts/run_best.sh` runs the attack + harmful/harmless eval for the 5 headline combos in two parallel GPU slots (heavy: Llama-3.1-8B; light: Gemma-2-2B). End-to-end wall-clock on a single 24 GB GPU is ~5–6 hours. For each combo it writes:
 
 ```
-experiments/<combo>/
+results/<model>/<attr>/
   summary.json                                  # attack config + final cos + edited pair texts
   steering_vector.pt                            # {steering_vector_clean, steering_vector_poisoned, layer}
   attack.log                                    # GCG trace
@@ -153,7 +153,7 @@ The script skips combos whose `steering_vector.pt` already exists, so it is rest
 ## Run a single attack
 
 ```bash
-.venv/bin/python attack/build_adv_stealth.py \
+uv run python -m advsteer.attack.build_adv_stealth \
   --model meta-llama/Meta-Llama-3.1-8B-Instruct --layer 18 \
   --pair_type lowercase --num_pairs 20 \
   --n_modify 5 --n_neighbors 100 \
@@ -161,17 +161,17 @@ The script skips combos whose `steering_vector.pt` already exists, so it is rest
   --gcg_budget 1500 --gcg_patience 500 \
   --n_candidates 64 --n_swaps 1 --eval_batch_size 8 \
   --dtype bfloat16 \
-  --output experiments/my_exp/summary.json
+  --output results/my_exp/summary.json
 ```
 
 Evaluate the final saved vector:
 
 ```bash
-.venv/bin/python eval/evaluate_asr.py \
+uv run python -m advsteer.eval.evaluate_asr \
   model=meta-llama/Meta-Llama-3.1-8B-Instruct \
-  directions_path=$(pwd)/experiments/my_exp/steering_vector.pt \
+  directions_path=$(pwd)/results/my_exp/steering_vector.pt \
   attribute=lowercase steering_weights=[2] eval_methods='[judge]' \
-  results_path=$(pwd)/experiments/my_exp/results_poisoned/
+  results_path=$(pwd)/results/my_exp/results_poisoned/
 
 # Add use_clean=true to evaluate the clean (un-attacked) vector instead.
 ```
@@ -208,18 +208,20 @@ All experiments use `bfloat16` and a single seed (0). No multi-seed confidence i
 ## Project layout
 
 ```
-attack/build_adv_stealth.py        # GCG attack (--cos_max for adaptive-attacker bypass)
-eval/
-  evaluate_asr.py                  # ASR + attribute evaluation (Hydra)
-  cos_detector.py                  # cos(v,-r) detector + ROC over legitimate-vector null
-defense/
-  orthogonalize_steering.py        # v_def = v - (v·r̂)r̂ ; writes steering_vector_defended.pt
-  stealth_check.py                 # LLM-judge audit over original vs poisoned pair texts
-  summarize_defense.py             # aggregate clean / poisoned / defended ASR + hAttr
-src/
+src/advsteer/
+  attack/build_adv_stealth.py      # GCG attack (--cos_max for adaptive-attacker bypass)
+  eval/
+    evaluate_asr.py                # ASR + attribute evaluation (Hydra)
+    cos_detector.py                # cos(v,-r) detector + ROC over legitimate-vector null
+  defense/
+    orthogonalize_steering.py      # v_def = v - (v·r̂)r̂ ; writes steering_vector_defended.pt
+    stealth_check.py               # LLM-judge audit over original vs poisoned pair texts
+    summarize_defense.py           # aggregate clean / poisoned / defended ASR + hAttr
   data.py                          # pair specs, pair loading, refusal-direction computation
   steering.py                      # ATTRIBUTE_CHECK_FNS, steered generation, to_chat
   classifiers.py                   # set_seed, GPT-2 perplexity, LLM judge (litellm-routed)
+
+results/                           # attack vectors + Hydra eval outputs (one subdir per combo)
 data/
   pairs/                           # POS/NEG pair datasets
   refusal/                         # 100 harmful + 100 harmless prompts; train/val splits
@@ -244,7 +246,7 @@ v_def = v − (v · r̂) r̂
 
 By construction `cos(v_def, r) = 0`, so the defended vector cannot push activations along the refusal axis. The component of v *orthogonal* to r — which is what the declared attribute relies on — is preserved.
 
-The defender computes r once per (model, layer) from the same harmful/harmless train splits the attacker can already access; no held-out prompts are needed. `defense/orthogonalize_steering.py` does the projection and writes `steering_vector_defended.pt` next to the original; `scripts/run_defense.sh` re-evaluates each headline combo with `use_defended=true`.
+The defender computes r once per (model, layer) from the same harmful/harmless train splits the attacker can already access; no held-out prompts are needed. `advsteer.defense.orthogonalize_steering` does the projection and writes `steering_vector_defended.pt` next to the original; `scripts/run_defense.sh` re-evaluates each headline combo with `use_defended=true`.
 
 | Model · attribute · L·w                          | ASR clean → poisoned → **defended** | hAttr (harmless) clean → poisoned → **defended** |
 | ------------------------------------------------ | ----------------------------------- | ------------------------------------------------ |
@@ -258,11 +260,11 @@ Across all five combos, defended ASR falls back to within ~0.06 of the clean bas
 
 ## Detecting — cos(v, −r) + adaptive attacker
 
-The same metric the attacker optimised also makes a detector. `eval/cos_detector.py` builds a null distribution by computing `cos(v_attr, −r)` for every attribute in `data/pair_specs.yaml` (legitimate steering vectors at the same model+layer) and compares it against the cos of every saved `steering_vector.pt` matching that (model, layer). Output: `cos_table.csv`, `cos_strip.png`, `cos_roc.png`, `summary.json` per (model, layer) tag, plus three operating points (`max(clean)`, `p99(clean)`, `μ + 3σ(clean)`).
+The same metric the attacker optimised also makes a detector. `advsteer.eval.cos_detector` builds a null distribution by computing `cos(v_attr, −r)` for every attribute in `data/pair_specs.yaml` (legitimate steering vectors at the same model+layer) and compares it against the cos of every saved `steering_vector.pt` matching that (model, layer). Output: `cos_table.csv`, `cos_strip.png`, `cos_roc.png`, `summary.json` per (model, layer) tag, plus three operating points (`max(clean)`, `p99(clean)`, `μ + 3σ(clean)`).
 
-Adaptive attackers know this detector exists. `attack/build_adv_stealth.py --cos_max <τ>` adds a hard cap that early-stops GCG as soon as `cos(v, −r) ≥ τ`, modelling the bypass strategy "stay below the defender's threshold". `scripts/run_detector.sh` sweeps `τ ∈ {0.05, 0.10, 0.15, 0.20}` over the five headline combos and re-evaluates ASR + hAttr at each cap — producing the bypass curve `(τ, ASR(τ), hAttr(τ))`. Outputs in `experiments/cos_cap_sweep/<base_exp>_cap<τ>/`.
+Adaptive attackers know this detector exists. `advsteer.attack.build_adv_stealth --cos_max <τ>` adds a hard cap that early-stops GCG as soon as `cos(v, −r) ≥ τ`, modelling the bypass strategy "stay below the defender's threshold". `scripts/run_detector.sh` sweeps `τ ∈ {0.05, 0.10, 0.15, 0.20}` over the five headline combos and re-evaluates ASR + hAttr at each cap — producing the bypass curve `(τ, ASR(τ), hAttr(τ))`. Outputs in `results/<model>/<attr>/cap<τ>/`.
 
-A separate **stealth check** (`defense/stealth_check.py`) audits the *texts*: each pair text — original POS/NEG and poisoned POS/NEG — is shown to a Claude-Sonnet-4-5 judge in isolation, which is asked whether the entry looks suspicious. A successful stealth attack should leave per-condition flag rates statistically indistinguishable and near zero. Results: `defense/stealth_check_results.json`.
+A separate **stealth check** (`advsteer.defense.stealth_check`) audits the *texts*: each pair text — original POS/NEG and poisoned POS/NEG — is shown to a Claude-Sonnet-4-5 judge in isolation, which is asked whether the entry looks suspicious. A successful stealth attack should leave per-condition flag rates statistically indistinguishable and near zero. Results: `results/stealth_check_results.json`.
 
 ## Caveats
 

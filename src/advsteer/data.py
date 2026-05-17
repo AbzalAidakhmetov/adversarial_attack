@@ -18,7 +18,7 @@ import yaml
 # Pair type specs (loaded from YAML; one entry per attribute)
 # ---------------------------------------------------------------------------
 
-_SPEC_PATH = Path(__file__).resolve().parents[1] / "data" / "pair_specs.yaml"
+_SPEC_PATH = Path(__file__).resolve().parents[2] / "data" / "pair_specs.yaml"
 with open(_SPEC_PATH) as _f:
     PAIR_TYPE_SPECS: Dict[str, Dict[str, Any]] = yaml.safe_load(_f)
 
@@ -132,7 +132,7 @@ def _load_safe_vocab_word_set(safe_vocab_arg: str) -> set:
     elif os.path.isfile(safe_vocab_arg):
         path = os.path.abspath(safe_vocab_arg)
     else:
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "vocab", safe_vocab_arg)
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "data", "vocab", safe_vocab_arg)
     with open(path) as f:
         return set(json.load(f))
 

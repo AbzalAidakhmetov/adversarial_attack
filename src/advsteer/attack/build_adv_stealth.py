@@ -15,13 +15,14 @@ Key properties:
 - Outputs steering_vector.pt directly (no separate extraction step)
 
 Usage:
-    python attack/build_adv_stealth.py \
+    uv run python -m advsteer.attack.build_adv_stealth \
         --pair_type number_placeholders --num_pairs 20 \
         --n_modify 5 --n_neighbors 100 \
-        --output experiments/stealth/summary.json
+        --output results/stealth/summary.json
 """
 
-import gc, argparse, random, string, sys, os, unicodedata
+import gc, argparse, os, random, string, unicodedata
+from pathlib import Path
 from time import time
 from typing import List, Dict, Any
 
@@ -30,14 +31,12 @@ import torch.nn.functional as F
 from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
-
-from data import (
+from advsteer.data import (
     PAIR_TYPE_SPECS, get_chat_template_parts,
     build_safe_vocab_mask, load_pairs, compute_refusal_direction,
     get_hidden_last, save_json,
 )
-from classifiers import set_seed
+from advsteer.classifiers import set_seed
 
 
 # ---------------------------------------------------------------------------
@@ -431,7 +430,7 @@ def stealth_optimize(
 # CLI
 # ---------------------------------------------------------------------------
 
-_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+_ROOT = str(Path(__file__).resolve().parents[3])
 
 
 def parse_args():

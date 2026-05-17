@@ -24,16 +24,16 @@ apply_style()
 
 
 PROJECT_ROOT = Path("/media/donato/Extra-storage/Code/mech-interp/adversarial_attack")
-EXPERIMENTS_DIR = PROJECT_ROOT / "experiments"
+RESULTS_DIR = PROJECT_ROOT / "results"
 OUTPUT_DIR = PROJECT_ROOT / "paper" / "figures"
 
 # (display label, experiment subdirectory)
 COMBOS: list[tuple[str, str]] = [
-    ("Gemma-2B\nspanish", "gemma_spanish_L14_w3"),
-    ("Gemma-2B\nfrench", "gemma_french_L14_w3"),
-    ("Llama-8B\nlowercase", "llama31_lowercase_L18_w2"),
-    ("Llama-8B\nspanish", "llama31_spanish_L18_w3"),
-    ("Gemma-2B\nbold", "gemma_has_bold_only_L14_w4"),
+    ("Gemma-2B\nspanish", "gemma/spanish"),
+    ("Gemma-2B\nfrench", "gemma/french"),
+    ("Llama-8B\nlowercase", "llama31/lowercase"),
+    ("Llama-8B\nspanish", "llama31/spanish"),
+    ("Gemma-2B\nbold", "gemma/has_bold_only"),
 ]
 
 # Sub-directory names within each experiment dir.
@@ -73,7 +73,7 @@ def load_metric(combo_dir: Path, subdir: str, key: str) -> float:
 
 
 def load_combo(label: str, subdir: str) -> dict:
-    combo_dir = EXPERIMENTS_DIR / subdir
+    combo_dir = RESULTS_DIR / subdir
     if not combo_dir.is_dir():
         raise FileNotFoundError(f"Missing experiment dir: {combo_dir}")
     asr = {state: load_metric(combo_dir, sub, "judge_success_rate")

@@ -105,7 +105,7 @@ def check_number_paragraphs(text: str) -> bool:
 
 _FASTTEXT_LID = None
 _FASTTEXT_LID_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "..", "data", "lid", "lid.176.bin")
+    os.path.dirname(os.path.abspath(__file__)), "..", "..", "data", "lid", "lid.176.bin")
 _FASTTEXT_LID_URL = "https://dl.fbaipublicfiles.com/fasttext/supervised-models/lid.176.bin"
 
 def _load_lid():

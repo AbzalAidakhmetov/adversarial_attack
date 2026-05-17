@@ -27,6 +27,6 @@ export https_proxy='http://login01:3133'
 
 export HF_HOME="${HF_HOME:-/leonardo_work/IscrC_TVU/dcrisost/.cache/huggingface}"
 
-mkdir -p slurm experiments
+mkdir -p slurm results
 
 bash scripts/run_detector.sh

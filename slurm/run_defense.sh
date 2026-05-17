@@ -1,17 +1,21 @@
 #!/bin/bash
-# SLURM wrapper for scripts/run_defense.sh — orthogonalization defense eval.
+# SLURM wrapper for scripts/run_defense.sh — submitted as a job array of size
+# 8, one GPU per combo (4 Llama heavy + 4 Gemma light combos, in the order
+# HEAVY_COMBOS then LIGHT_COMBOS from scripts/run_defense.sh).
 #
-# Reuses steering_vector.pt from run_best.sh experiments (no GCG re-run): the
-# defense step is a cheap projection plus 4 ASR evals per combo. ~2-3 h is
-# typical; 6 h walltime for headroom.
+# Each array task orthogonalizes the existing steering_vector.pt for one
+# combo and then runs 4 ASR evals (clean/poisoned × harmful/harmless on the
+# defended vector). No GCG re-run. Walltime ≈ longest single combo's evals
+# (~2-3 h on Llama-8B); 4 h walltime for headroom.
 #
 # Submit with:
 #   sbatch slurm/run_defense.sh
 #SBATCH -D /leonardo_work/IscrC_TVU/dcrisost/adversarial_attack
-#SBATCH --job-name=adv-run-defense
-#SBATCH --output=./slurm/%x-%j.out
-#SBATCH --error=./slurm/%x-%j.err
-#SBATCH --time=06:00:00
+#SBATCH --job-name=adv-defense
+#SBATCH --output=./slurm/%x-%A_%a.out
+#SBATCH --error=./slurm/%x-%A_%a.err
+#SBATCH --array=0-7
+#SBATCH --time=4:00:00
 #SBATCH --ntasks=1
 #SBATCH --mem=60G
 #SBATCH --partition=boost_usr_prod
@@ -26,6 +30,6 @@ export https_proxy='http://login01:3133'
 
 export HF_HOME="${HF_HOME:-/leonardo_work/IscrC_TVU/dcrisost/.cache/huggingface}"
 
-mkdir -p slurm experiments
+mkdir -p slurm results
 
 bash scripts/run_defense.sh

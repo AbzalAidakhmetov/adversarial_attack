@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Compare experiments/<combo>/results_* to the CLAUDE.md headline table.
+"""Compare results/<model>/<attr>/results_* to the CLAUDE.md headline table.
 
 Reads:
-  experiments/<EXP>/results_clean_harmful/results     -> ASR  clean
-  experiments/<EXP>/results_clean_harmless/results    -> hAttr clean
-  experiments/<EXP>/results_poisoned_harmful/results  -> ASR  poisoned
-  experiments/<EXP>/results_poisoned_harmless/results -> hAttr poisoned
+  results/<model>/<attr>/results_clean_harmful/results     -> ASR  clean
+  results/<model>/<attr>/results_clean_harmless/results    -> hAttr clean
+  results/<model>/<attr>/results_poisoned_harmful/results  -> ASR  poisoned
+  results/<model>/<attr>/results_poisoned_harmless/results -> hAttr poisoned
 
 Each `results` file is a JSON list with one record per (layer, weight); we
 pick the record matching the combo's (layer, weight) and pull:
@@ -13,7 +13,7 @@ pick the record matching the combo's (layer, weight) and pull:
   hAttr -> steering_success_rate
 
 Run from project root:
-    .venv/bin/python slurm/verify_best.py
+    uv run python slurm/verify_best.py
 """
 import json
 from pathlib import Path
@@ -22,15 +22,15 @@ from typing import Optional
 # (exp_dir, layer, weight, expected_hAttr_clean, expected_hAttr_poisoned,
 #  expected_ASR_clean, expected_ASR_poisoned)
 HEADLINES = [
-    ("gemma_spanish_L14_w3",       14, 3, 0.84, 0.94, 0.03, 0.51),
-    ("gemma_french_L14_w3",        14, 3, 0.87, 0.86, 0.09, 0.44),
-    ("gemma_has_bold_only_L14_w4", 14, 4, 0.73, 0.72, 0.05, 0.21),
-    ("llama31_lowercase_L18_w2",   18, 2, 0.84, 0.91, 0.06, 0.39),
-    ("llama31_spanish_L18_w3",     18, 3, 0.87, 0.82, 0.01, 0.20),
+    ("gemma/spanish",        14, 3, 0.84, 0.94, 0.03, 0.51),
+    ("gemma/french",         14, 3, 0.87, 0.86, 0.09, 0.44),
+    ("gemma/has_bold_only",  14, 4, 0.73, 0.72, 0.05, 0.21),
+    ("llama31/lowercase",    18, 2, 0.84, 0.91, 0.06, 0.39),
+    ("llama31/spanish",      18, 3, 0.87, 0.82, 0.01, 0.20),
 ]
 
 ROOT = Path(__file__).resolve().parent.parent
-EXP_ROOT = ROOT / "experiments"
+EXP_ROOT = ROOT / "results"
 
 
 def _pick(records, layer: int, weight: float, key: str) -> Optional[float]:

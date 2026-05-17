@@ -24,16 +24,16 @@ apply_style()
 
 
 PROJECT_ROOT = Path("/media/donato/Extra-storage/Code/mech-interp/adversarial_attack")
-EXPERIMENTS_DIR = PROJECT_ROOT / "experiments"
+RESULTS_DIR = PROJECT_ROOT / "results"
 OUTPUT_DIR = PROJECT_ROOT / "paper" / "figures"
 
 # (display label, experiment subdirectory)
 COMBOS: list[tuple[str, str]] = [
-    ("Gemma spanish", "gemma_spanish_L14_w3"),
-    ("Gemma french", "gemma_french_L14_w3"),
-    ("Llama lowercase", "llama31_lowercase_L18_w2"),
-    ("Llama spanish", "llama31_spanish_L18_w3"),
-    (r"Gemma has\_bold\_only", "gemma_has_bold_only_L14_w4"),
+    ("Gemma spanish", "gemma/spanish"),
+    ("Gemma french", "gemma/french"),
+    ("Llama lowercase", "llama31/lowercase"),
+    ("Llama spanish", "llama31/spanish"),
+    (r"Gemma has\_bold\_only", "gemma/has_bold_only"),
 ]
 
 ACCENT = POISONED
@@ -64,7 +64,7 @@ def _judge_success_rate(results_dir: Path) -> float:
 
 
 def load_combo(label: str, subdir: str) -> dict:
-    combo_dir = EXPERIMENTS_DIR / subdir
+    combo_dir = RESULTS_DIR / subdir
     summary = _read_json(combo_dir / "summary.json")
     if not isinstance(summary, dict) or "delta_cos" not in summary:
         raise KeyError(

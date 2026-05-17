@@ -21,16 +21,16 @@ apply_style()
 
 
 PROJECT_ROOT = Path("/media/donato/Extra-storage/Code/mech-interp/adversarial_attack")
-EXPERIMENTS_DIR = PROJECT_ROOT / "experiments"
+RESULTS_DIR = PROJECT_ROOT / "results"
 OUTPUT_DIR = PROJECT_ROOT / "paper" / "figures"
 
 # (display label, experiment subdirectory)
 COMBOS: list[tuple[str, str]] = [
-    ("Gemma-2-2B\nspanish", "gemma_spanish_L14_w3"),
-    ("Gemma-2-2B\nfrench", "gemma_french_L14_w3"),
-    ("Llama-3.1-8B\nlowercase", "llama31_lowercase_L18_w2"),
-    ("Llama-3.1-8B\nspanish", "llama31_spanish_L18_w3"),
-    (r"Gemma-2-2B" + "\n" + r"has\_bold\_only", "gemma_has_bold_only_L14_w4"),
+    ("Gemma-2-2B\nspanish", "gemma/spanish"),
+    ("Gemma-2-2B\nfrench", "gemma/french"),
+    ("Llama-3.1-8B\nlowercase", "llama31/lowercase"),
+    ("Llama-3.1-8B\nspanish", "llama31/spanish"),
+    (r"Gemma-2-2B" + "\n" + r"has\_bold\_only", "gemma/has_bold_only"),
 ]
 
 REQUIRED_KEYS = (
@@ -48,7 +48,7 @@ COLOR_ZERO = PALETTE["Rich black"]
 
 
 def load_combo(label: str, subdir: str) -> dict:
-    summary_path = EXPERIMENTS_DIR / subdir / "summary.json"
+    summary_path = RESULTS_DIR / subdir / "summary.json"
     if not summary_path.is_file():
         raise FileNotFoundError(f"Missing summary.json: {summary_path}")
     with summary_path.open() as f:

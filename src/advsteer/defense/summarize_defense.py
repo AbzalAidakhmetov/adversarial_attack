@@ -12,7 +12,7 @@ hAttr is `steering_success_rate` on the harmless split (the load-bearing
 stealth property in the paper).
 
 Usage:
-    python defense/summarize_defense.py experiments/gemma_spanish_L14_all_steps_w1p5 ...
+    uv run python -m advsteer.defense.summarize_defense results/gemma/spanish/all_steps_w1p5 ...
 """
 
 import json, sys
@@ -49,7 +49,7 @@ def _fmt(x):
 
 
 def main():
-    paths = [Path(p) for p in sys.argv[1:]] or sorted(Path("experiments").glob("*_all_steps_*"))
+    paths = [Path(p) for p in sys.argv[1:]] or sorted(Path("results").glob("*/*/all_steps_*"))
     rows = [summarize(p) for p in paths if p.is_dir()]
 
     print()

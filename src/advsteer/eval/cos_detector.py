@@ -7,7 +7,7 @@ For a fixed (model, layer):
     compute the clean steering vector v = mean(POS) - mean(NEG) at the
     target layer from --num_pairs pairs and record cos(v, -r).
     This is the null distribution of "legitimate steering vectors".
-  - For every experiments/<dir>/steering_vector.pt whose 'model' and
+  - For every results/<dir>/steering_vector.pt whose 'model' and
     'layer' fields match the current run, record cos for both
     'steering_vector_clean' and 'steering_vector_poisoned'.
   - Sweep thresholds, plot strip-plot + ROC, dump CSV + JSON.
@@ -17,9 +17,9 @@ vector iff cos(v, -r) > tau. This script measures how well that flag
 separates poisoned from clean vectors and at what FPR.
 
 Usage:
-    python eval/cos_detector.py \
+    uv run python -m advsteer.eval.cos_detector \
         --model google/gemma-2-2b-it --layer 14 \
-        --output experiments/cos_detector/gemma_L14/
+        --output results/cos_detector/gemma_L14/
 """
 
 import argparse
@@ -27,23 +27,21 @@ import csv
 import glob
 import json
 import os
-import sys
 from pathlib import Path
 
 import torch
 import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
-from data import (
+from advsteer.data import (
     PAIR_TYPE_SPECS,
     compute_refusal_direction,
     get_hidden_last,
     load_pairs,
 )
-from classifiers import set_seed
+from advsteer.classifiers import set_seed
 
-_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+_ROOT = str(Path(__file__).resolve().parents[3])
 
 
 def parse_args():
@@ -59,7 +57,7 @@ def parse_args():
                     default=os.path.join(_ROOT, "data", "refusal", "splits", "harmless_train.json"))
     ap.add_argument("--refusal_samples", type=int, default=128)
     ap.add_argument("--data_dir", default=os.path.join(_ROOT, "data", "pairs"))
-    ap.add_argument("--experiments_dir", default=os.path.join(_ROOT, "experiments"))
+    ap.add_argument("--experiments_dir", default=os.path.join(_ROOT, "results"))
     ap.add_argument("--output", required=True, help="Output dir")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--dtype", default="bfloat16", choices=["float32", "bfloat16"])

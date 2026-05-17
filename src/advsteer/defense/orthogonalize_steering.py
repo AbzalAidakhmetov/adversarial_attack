@@ -18,25 +18,23 @@ Writes a new .pt containing the original keys plus
 small JSON sidecar reporting the cosines before/after for the record.
 
 Usage:
-    python defense/orthogonalize_steering.py \
-        --input experiments/<combo>/steering_vector.pt \
+    uv run python -m advsteer.defense.orthogonalize_steering \
+        --input results/<model>/<attr>/steering_vector.pt \
         --model google/gemma-2-2b-it
 """
 
-import argparse, gc, json, os, sys
+import argparse, gc, json, os
 from pathlib import Path
 
 import torch
 import torch.nn.functional as F
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
-
-from data import compute_refusal_direction
-from classifiers import set_seed
+from advsteer.data import compute_refusal_direction
+from advsteer.classifiers import set_seed
 
 
-_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+_ROOT = str(Path(__file__).resolve().parents[3])
 
 
 def parse_args():

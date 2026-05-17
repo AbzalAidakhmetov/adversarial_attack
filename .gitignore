@@ -233,10 +233,6 @@ cluster/
 *.out
 *.slurm
 
-# Experiments
-experiments/*
-!experiments/.gitkeep
-
 # fastText language-id model (downloaded by setup; ~125 MB)
 data/lid/
 
@@ -248,7 +244,7 @@ data/lid/
 
 .claude/
 outputs
-experiments_archive/
+results_archive/
 plots_archive/
 plots/**
 !plots/.gitkeep
@@ -258,5 +254,5 @@ verify_headlines.sh
 paper
 
 # Defense run artifacts
-defense/*_results.json
-defense/*.log
+src/advsteer/defense/*_results.json
+src/advsteer/defense/*.log

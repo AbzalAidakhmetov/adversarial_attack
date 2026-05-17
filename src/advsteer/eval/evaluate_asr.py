@@ -3,20 +3,16 @@ import os
 from pathlib import Path
 from typing import Dict, List, Optional
 
-import sys
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
-
 import omegaconf
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from tqdm import tqdm
 import hydra
 
-from classifiers import evaluate_perplexity, set_seed
-from steering import generate_steered_batched, evaluate_steering
-from classifiers import evaluate_jailbreak
+from advsteer.classifiers import evaluate_perplexity, set_seed, evaluate_jailbreak
+from advsteer.steering import generate_steered_batched, evaluate_steering
 
-PROJECT_ROOT = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 import logging
 
 logging.getLogger("LiteLLM").setLevel(logging.WARNING)
