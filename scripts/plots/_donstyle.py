@@ -1,7 +1,7 @@
 """Shared plotting style modelled on github.com/crisostomi/donplots.
 
 LaTeX-rendered serif fonts (Computer Modern), seaborn "talk" context, and the
-`ocean_sunset` palette. Import once at the top of each plot script:
+`advsteer.PALETTE` colours. Import once at the top of each plot script:
 
     from _donstyle import apply_style, PALETTE, CLEAN, POISONED, DEFENDED, REF
     apply_style()
@@ -12,24 +12,17 @@ from __future__ import annotations
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+from advsteer import PALETTE as _ADVSTEER_PALETTE
 
-PALETTE = {
-    "Rich black":    "#001219",
-    "Midnight green":"#005f73",
-    "Dark cyan":     "#0a9396",
-    "Tiffany Blue":  "#94d2bd",
-    "Vanilla":       "#e9d8a6",
-    "Gamboge":       "#ee9b00",
-    "Alloy orange":  "#ca6702",
-    "Rust":          "#bb3e03",
-    "Rufous":        "#ae2012",
-    "Auburn":        "#9b2226",
-}
 
-CLEAN = PALETTE["Midnight green"]
-POISONED = PALETTE["Auburn"]
-DEFENDED = PALETTE["Gamboge"]
-REF = PALETTE["Rich black"]
+PALETTE = {name: f"#{hex_val}" for name, hex_val in _ADVSTEER_PALETTE.items()}
+
+CLEAN = PALETTE["Dark Slate Grey"]
+POISONED = PALETTE["Brown Red"]
+DEFENDED = PALETTE["Honey Bronze"]
+REF = PALETTE["Night Bordeaux"]
+LINE = PALETTE["Dark Slate Grey"]
+ACCENT = PALETTE["Honey Bronze"]
 
 
 def apply_style() -> None:
@@ -100,7 +93,7 @@ def draw_model_subrow(ax, group_spans, *, y_bracket: float = -0.16,
         ax.plot(
             [x0 - bracket_pad, x1 + bracket_pad],
             [y_bracket, y_bracket],
-            transform=trans, color=PALETTE["Rich black"],
+            transform=trans, color=REF,
             linewidth=1.0, clip_on=False, zorder=4,
         )
         ax.text(
@@ -108,5 +101,5 @@ def draw_model_subrow(ax, group_spans, *, y_bracket: float = -0.16,
             transform=trans,
             ha="center", va="top",
             fontsize=fontsize,
-            color=PALETTE["Rich black"],
+            color=REF,
         )

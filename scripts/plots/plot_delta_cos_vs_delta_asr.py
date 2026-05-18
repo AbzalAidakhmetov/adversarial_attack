@@ -18,7 +18,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _donstyle import apply_style, POISONED, PALETTE
+from _donstyle import apply_style, POISONED, PALETTE, REF, LINE
 
 apply_style()
 
@@ -41,8 +41,8 @@ COMBOS: list[tuple[str, str, tuple[float, float] | None]] = [
 ]
 
 ACCENT = POISONED
-REF_GRAY = PALETTE["Rich black"]
-TREND_GRAY = PALETTE["Dark cyan"]
+REF_GRAY = REF
+TREND_GRAY = LINE
 
 
 def _read_json(path: Path) -> object:
@@ -169,7 +169,7 @@ def main() -> None:
             xy=(x, y),
             xytext=(tx, ty),
             fontsize=13,
-            color=PALETTE["Rich black"],
+            color=REF,
             ha=ha, va=va,
             zorder=4,
         )

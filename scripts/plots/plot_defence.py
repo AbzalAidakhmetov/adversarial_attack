@@ -18,7 +18,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _donstyle import apply_style, CLEAN, POISONED, DEFENDED, PALETTE
+from _donstyle import apply_style, CLEAN, POISONED, DEFENDED, PALETTE, LINE, ACCENT
 
 apply_style()
 
@@ -54,7 +54,7 @@ HATTR_SUBDIRS = {
 COLOR_CLEAN = CLEAN
 COLOR_POISONED = POISONED
 COLOR_DEFENDED = DEFENDED
-COLOR_LINE = PALETTE["Tiffany Blue"]
+COLOR_LINE = LINE
 
 
 def load_metric(combo_dir: Path, subdir: str, key: str) -> float:
@@ -135,7 +135,7 @@ def _draw_panel(ax, rows, metric_key: str, ylabel: str,
                 ha="left",
                 va="center",
                 fontsize=11,
-                color=PALETTE["Alloy orange"],
+                color=ACCENT,
             )
 
     # y-limits: respect requested target, auto-expand if data exceeds it.

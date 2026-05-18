@@ -35,6 +35,8 @@ from _donstyle import (
     CLEAN,
     POISONED,
     PALETTE,
+    REF,
+    LINE,
     group_by_model_layout,
     draw_model_subrow,
 )
@@ -58,7 +60,7 @@ GROUP_GAP: float = 1.4
 
 CLEAN_COLOR = CLEAN
 POISONED_COLOR = POISONED
-LINE_COLOR = PALETTE["Tiffany Blue"]
+LINE_COLOR = LINE
 
 
 @dataclass(frozen=True)
@@ -177,7 +179,7 @@ def _draw_panel(
             xy=(x + dx_annot, y_text),
             ha="left", va="center",
             fontsize=11,
-            color=PALETTE["Rich black"],
+            color=REF,
         )
 
     ax.set_ylabel(ylabel)

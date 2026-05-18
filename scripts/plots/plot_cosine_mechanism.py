@@ -15,7 +15,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _donstyle import apply_style, CLEAN, POISONED, PALETTE
+from _donstyle import apply_style, CLEAN, POISONED, PALETTE, REF, ACCENT
 
 apply_style()
 
@@ -47,8 +47,8 @@ REQUIRED_KEYS = (
 
 COLOR_CLEAN = CLEAN
 COLOR_POISONED = POISONED
-COLOR_ARROW = PALETTE["Dark cyan"]
-COLOR_ZERO = PALETTE["Rich black"]
+COLOR_ARROW = ACCENT
+COLOR_ZERO = REF
 
 
 def load_combo(label: str, subdir: str) -> dict:
@@ -141,7 +141,7 @@ def main() -> None:
             ha="center",
             va="bottom",
             fontsize=11,
-            color=PALETTE["Rich black"],
+            color=REF,
         )
 
     ax.set_xticks(xs)

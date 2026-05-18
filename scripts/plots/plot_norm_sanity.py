@@ -32,6 +32,8 @@ from _donstyle import (
     CLEAN,
     POISONED,
     PALETTE,
+    REF,
+    LINE,
     group_by_model_layout,
     draw_model_subrow,
 )
@@ -63,7 +65,7 @@ COMBOS: list[tuple[str, str, str]] = [
 
 COLOR_CLEAN = CLEAN
 COLOR_POISONED = POISONED
-COLOR_REF = PALETTE["Rich black"]
+COLOR_REF = REF
 
 
 def _require(path: Path) -> Path:
@@ -204,7 +206,7 @@ def main() -> None:
     for xi, pc, pp in zip(x, ppl_clean, ppl_poisoned):
         axB.plot(
             [xi, xi], [pc, pp],
-            color=PALETTE["Tiffany Blue"],
+            color=LINE,
             linewidth=1.6, alpha=0.75, zorder=1,
         )
     axB.scatter(x, ppl_clean, s=80, color=COLOR_CLEAN,
