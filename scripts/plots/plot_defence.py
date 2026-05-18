@@ -29,14 +29,17 @@ OUTPUT_DIR = PROJECT_ROOT / "paper" / "figures"
 
 # (display label, experiment subdirectory)
 COMBOS: list[tuple[str, str]] = [
-    ("Gemma-2B\nspanish", "gemma/spanish"),
-    ("Gemma-2B\nfrench", "gemma/french"),
-    ("Llama-8B\nlowercase", "llama31/lowercase"),
-    ("Llama-8B\nspanish", "llama31/spanish"),
-    ("Gemma-2B\nbold", "gemma/has_bold_only"),
+    ("Gemma-2B\nspanish",    "gemma/spanish"),
+    ("Gemma-2B\nfrench",     "gemma/french"),
+    ("Gemma-2B\nlowercase",  "gemma/lowercase"),
+    ("Gemma-2B\nbold",       "gemma/has_bold_only"),
+    ("Llama-8B\nspanish",    "llama31/spanish"),
+    ("Llama-8B\nfrench",     "llama31/french"),
+    ("Llama-8B\nlowercase",  "llama31/lowercase"),
+    ("Llama-8B\nbold",       "llama31/has_bold_only"),
 ]
 
-# Sub-directory names within each experiment dir.
+# Sub-directory name templates.
 ASR_SUBDIRS = {
     "clean": "results_clean_harmful",
     "poisoned": "results_poisoned_harmful",
@@ -147,7 +150,7 @@ def _draw_panel(ax, rows, metric_key: str, ylabel: str,
     ax.set_xticks(xs)
     ax.set_xticklabels(
         [r["label"] for r in rows],
-        fontsize=12,
+        fontsize=11, rotation=30, ha="right",
     )
     ax.set_ylabel(ylabel)
     ax.tick_params(axis="x", pad=4)
@@ -185,7 +188,7 @@ def main() -> None:
             f"{rec_s:>8}  {r['delta_asr']:>+6.3f}"
         )
 
-    fig, (ax_a, ax_b) = plt.subplots(1, 2, figsize=(13, 5))
+    fig, (ax_a, ax_b) = plt.subplots(1, 2, figsize=(14, 5))
 
     _draw_panel(
         ax_a, rows, metric_key="asr", ylabel="ASR",

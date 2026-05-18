@@ -1,10 +1,16 @@
-"""Publication-quality figure for Table 1: main results (ASR & hAttr).
+"""Publication-quality figures for Table 1: main results (ASR & hAttr).
 
-For each of the 5 headline (model, attribute) combos, reads the four results
-files produced by `eval/evaluate_asr.py` and renders two side-by-side panels:
+For each of the 8 headline (model, attribute) combos, reads the four results
+files produced by `eval/evaluate_asr.py` and renders TWO SEPARATE figures
+(one PDF each) suitable for inclusion via the LaTeX `subcaption` package:
 
-  Panel A: ASR  clean -> poisoned (per combo, sorted by ΔASR descending)
-  Panel B: hAttr clean -> poisoned (same x ordering)
+  fig_main_results_asr.pdf   — ASR  clean -> poisoned (grouped by model)
+  fig_main_results_hattr.pdf — hAttr clean -> poisoned (grouped by model)
+
+Within each panel combos are grouped by model (Gemma block then Llama block,
+with a visual gap between groups) and sorted by ΔASR descending inside each
+group. Attribute names are on the x ticks; the model name appears as a
+sub-row below each group's ticks.
 
 All numeric values come from JSON on disk; nothing is hard-coded.
 
@@ -24,7 +30,14 @@ import sys
 import matplotlib.pyplot as plt
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _donstyle import apply_style, CLEAN, POISONED, PALETTE
+from _donstyle import (
+    apply_style,
+    CLEAN,
+    POISONED,
+    PALETTE,
+    group_by_model_layout,
+    draw_model_subrow,
+)
 
 apply_style()
 
@@ -36,6 +49,13 @@ DEFAULT_RESULTS_ROOT = PROJECT_ROOT / "results"
 DEFAULT_OUT_DIR = PROJECT_ROOT / "paper" / "figures"
 DEFAULT_FIG_STEM = "fig_main_results"
 
+# Model order for grouping on the x-axis (left -> right).
+MODEL_ORDER: List[str] = ["Gemma-2-2B", "Llama-3.1-8B"]
+# Horizontal spacing between adjacent combos within a model group (x-units).
+INTRA_GAP: float = 1.6
+# Extra gap (in x-units) inserted between the two model groups.
+GROUP_GAP: float = 1.4
+
 CLEAN_COLOR = CLEAN
 POISONED_COLOR = POISONED
 LINE_COLOR = PALETTE["Tiffany Blue"]
@@ -43,20 +63,23 @@ LINE_COLOR = PALETTE["Tiffany Blue"]
 
 @dataclass(frozen=True)
 class Combo:
-    label: str          # display label (compact, two-line)
-    directory: str      # subdir under results/
-    model: str
+    label: str          # attribute-only display label (model shown as group subtext)
+    directory: str      # subdir under results/ (e.g. "gemma/spanish")
+    model: str          # display name, used both for grouping and the group subtext
     attribute: str
     layer: int
-    alpha: float
+    weight: int         # bundled steering weight (paper metadata)
 
 
 COMBOS: List[Combo] = [
-    Combo("Gemma-2-2B\nspanish",          "gemma/spanish",       "Gemma-2-2B",   "spanish",        14, 3),
-    Combo("Gemma-2-2B\nfrench",           "gemma/french",        "Gemma-2-2B",   "french",         14, 3),
-    Combo("Llama-3.1-8B\nlowercase",      "llama31/lowercase",   "Llama-3.1-8B", "lowercase",      18, 2),
-    Combo("Llama-3.1-8B\nspanish",        "llama31/spanish",     "Llama-3.1-8B", "spanish",        18, 3),
-    Combo(r"Gemma-2-2B" + "\n" + r"has\_bold\_only", "gemma/has_bold_only", "Gemma-2-2B", "has_bold_only", 14, 4),
+    Combo("spanish",   "gemma/spanish",         "Gemma-2-2B",   "spanish",        14, 3),
+    Combo("french",    "gemma/french",          "Gemma-2-2B",   "french",         14, 3),
+    Combo("lowercase", "gemma/lowercase",       "Gemma-2-2B",   "lowercase",      14, 4),
+    Combo("bold",      "gemma/has_bold_only",   "Gemma-2-2B",   "has_bold_only",  14, 4),
+    Combo("spanish",   "llama31/spanish",       "Llama-3.1-8B", "spanish",        18, 3),
+    Combo("french",    "llama31/french",        "Llama-3.1-8B", "french",         18, 4),
+    Combo("lowercase", "llama31/lowercase",     "Llama-3.1-8B", "lowercase",      18, 2),
+    Combo("bold",      "llama31/has_bold_only", "Llama-3.1-8B", "has_bold_only",  18, 4),
 ]
 
 
@@ -97,6 +120,7 @@ def load_combo_metrics(combo: Combo, results_root: Path) -> dict:
     hattr_poisoned = _get_metric(_read_results_file(paths["hattr_poisoned"]), "steering_success_rate", paths["hattr_poisoned"])
     return {
         "label": combo.label,
+        "model": combo.model,
         "asr_clean": asr_clean,
         "asr_poisoned": asr_poisoned,
         "hattr_clean": hattr_clean,
@@ -120,7 +144,8 @@ def _draw_panel(
     deltas: List[float],
     ylabel: str,
     ylim: tuple[float, float],
-    title: str,
+    labels: List[str],
+    group_spans: List[tuple[str, float, float]],
 ) -> None:
     # connecting lines
     for x, c, p in zip(xs, clean_vals, poisoned_vals):
@@ -144,72 +169,77 @@ def _draw_panel(
 
     # delta annotations: place just to the right of the pair so they never
     # collide with the markers or with adjacent columns
+    dx_annot = 0.20 * INTRA_GAP
     for x, c, p, d in zip(xs, clean_vals, poisoned_vals, deltas):
         y_text = 0.5 * (c + p)
         ax.annotate(
             _fmt_delta(d),
-            xy=(x + 0.20, y_text),
+            xy=(x + dx_annot, y_text),
             ha="left", va="center",
             fontsize=11,
             color=PALETTE["Rich black"],
         )
 
     ax.set_ylabel(ylabel)
-    ax.set_title(title, fontsize=14, loc="left", pad=8)
     ax.grid(axis="y", linestyle="--", linewidth=0.7, alpha=0.4, zorder=0)
     ax.set_axisbelow(True)
 
+    # attribute tick labels (no rotation: short single-word labels fit)
+    ax.set_xticks(xs)
+    ax.set_xticklabels(labels, fontsize=12)
+    # padding on both sides so group brackets and Δ annotations have room
+    side_pad = 0.5 * INTRA_GAP
+    ax.set_xlim(xs[0] - side_pad, xs[-1] + side_pad)
+    ax.tick_params(axis="y", labelsize=12)
 
-def make_figure(rows: List[dict], out_dir: Path, fig_stem: str) -> List[Path]:
-    # sort by ΔASR descending
-    rows_sorted = sorted(rows, key=lambda r: r["delta_asr"], reverse=True)
+    draw_model_subrow(ax, group_spans)
 
-    labels = [r["label"] for r in rows_sorted]
-    xs = list(range(len(rows_sorted)))
 
-    asr_clean    = [r["asr_clean"]    for r in rows_sorted]
-    asr_poison   = [r["asr_poisoned"] for r in rows_sorted]
-    asr_delta    = [r["delta_asr"]    for r in rows_sorted]
-
-    hattr_clean  = [r["hattr_clean"]    for r in rows_sorted]
-    hattr_poison = [r["hattr_poisoned"] for r in rows_sorted]
-    hattr_delta  = [r["delta_hattr"]    for r in rows_sorted]
-
-    fig, (axA, axB) = plt.subplots(
-        1, 2, figsize=(12, 4.6), sharex=True,
+def _save_single_panel(
+    rows: List[dict],
+    out_dir: Path,
+    fig_stem: str,
+    metric: str,
+    ylabel: str,
+    ylim: tuple[float, float],
+    legend: bool,
+) -> List[Path]:
+    """Render one of the two panels (ASR or hAttr) as a standalone figure."""
+    ordered, xs, spans = group_by_model_layout(
+        rows, MODEL_ORDER, intra_gap=INTRA_GAP, group_gap=GROUP_GAP,
     )
+    labels = [r["label"] for r in ordered]
+    if metric == "asr":
+        clean_vals    = [r["asr_clean"]    for r in ordered]
+        poisoned_vals = [r["asr_poisoned"] for r in ordered]
+        deltas        = [r["delta_asr"]    for r in ordered]
+    elif metric == "hattr":
+        clean_vals    = [r["hattr_clean"]    for r in ordered]
+        poisoned_vals = [r["hattr_poisoned"] for r in ordered]
+        deltas        = [r["delta_hattr"]    for r in ordered]
+    else:
+        raise ValueError(f"unknown metric: {metric}")
 
+    fig, ax = plt.subplots(figsize=(8.2, 4.8))
     _draw_panel(
-        axA, xs, asr_clean, asr_poison, asr_delta,
-        ylabel="ASR (judge)",
-        ylim=(0.0, 0.6),
-        title=r"A. Attack success rate (harmful prompts)",
-    )
-    _draw_panel(
-        axB, xs, hattr_clean, hattr_poison, hattr_delta,
-        ylabel="hAttr (attribute compliance)",
-        ylim=(0.6, 1.0),
-        title=r"B. Benign-attribute compliance (harmless prompts)",
+        ax, xs, clean_vals, poisoned_vals, deltas,
+        ylabel=ylabel,
+        ylim=ylim,
+        labels=labels,
+        group_spans=spans,
     )
 
-    for ax in (axA, axB):
-        ax.set_xticks(xs)
-        ax.set_xticklabels(
-            labels, fontsize=12, rotation=0, ha="center",
+    if legend:
+        ax.legend(
+            loc="upper right",
+            frameon=False,
+            fontsize=12,
+            handletextpad=0.4,
+            borderaxespad=0.3,
         )
-        # extra right padding so the Δ annotation on the last combo fits
-        ax.set_xlim(-0.5, len(xs) - 0.5 + 0.45)
-        ax.tick_params(axis="y", labelsize=12)
 
-    axA.legend(
-        loc="upper right",
-        frameon=False,
-        fontsize=12,
-        handletextpad=0.4,
-        borderaxespad=0.3,
-    )
-
-    fig.tight_layout()
+    # leave room at the bottom for the model sub-row labels
+    fig.subplots_adjust(bottom=0.22)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     pdf_path = out_dir / f"{fig_stem}.pdf"
@@ -218,6 +248,25 @@ def make_figure(rows: List[dict], out_dir: Path, fig_stem: str) -> List[Path]:
     fig.savefig(png_path, bbox_inches="tight", dpi=300)
     plt.close(fig)
     return [pdf_path, png_path]
+
+
+def make_figure(rows: List[dict], out_dir: Path, fig_stem: str) -> List[Path]:
+    """Render the two sub-panels as two separate files (ASR / hAttr)."""
+    asr_paths = _save_single_panel(
+        rows, out_dir, f"{fig_stem}_asr",
+        metric="asr",
+        ylabel="ASR (judge)",
+        ylim=(0.0, 0.6),
+        legend=True,
+    )
+    hattr_paths = _save_single_panel(
+        rows, out_dir, f"{fig_stem}_hattr",
+        metric="hattr",
+        ylabel="hAttr (attribute compliance)",
+        ylim=(0.6, 1.0),
+        legend=False,
+    )
+    return asr_paths + hattr_paths
 
 
 def main() -> None:
@@ -246,18 +295,22 @@ def main() -> None:
         f"{'hAttr c':>8s}  {'hAttr p':>8s}  {'ΔhAttr':>8s}"
     )
     for r, c in zip(rows, COMBOS):
-        flat = c.label.replace("\n", " ")
+        flat = f"{c.model} {c.label}"
         print(
             f"  {flat:40s}  "
             f"{r['asr_clean']:9.3f}  {r['asr_poisoned']:9.3f}  {r['delta_asr']:+7.3f}  "
             f"{r['hattr_clean']:8.3f}  {r['hattr_poisoned']:8.3f}  {r['delta_hattr']:+8.3f}"
         )
 
-    sorted_rows = sorted(rows, key=lambda r: r["delta_asr"], reverse=True)
-    print("\nOrder used in figure (by ΔASR desc):")
-    for r in sorted_rows:
-        flat = r["label"].replace("\n", " ")
-        print(f"  ΔASR={r['delta_asr']:+.3f}  {flat}")
+    print("\nOrder used in figure (grouped by model, ΔASR desc within group):")
+    for model in MODEL_ORDER:
+        members = [r for r in rows if r["model"] == model]
+        members.sort(key=lambda r: r["delta_asr"], reverse=True)
+        if not members:
+            continue
+        print(f"  [{model}]")
+        for r in members:
+            print(f"    ΔASR={r['delta_asr']:+.3f}  {r['label']}")
 
     out_paths = make_figure(rows, args.out_dir, args.fig_stem)
     print("\nWrote:")

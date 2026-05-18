@@ -24,13 +24,17 @@ PROJECT_ROOT = Path("/media/donato/Extra-storage/Code/mech-interp/adversarial_at
 RESULTS_DIR = PROJECT_ROOT / "results"
 OUTPUT_DIR = PROJECT_ROOT / "paper" / "figures"
 
-# (display label, experiment subdirectory)
+# (display label, experiment subdirectory) -- cosine is weight-independent
+# (it depends only on summary.json's cos_clean/cos_poisoned).
 COMBOS: list[tuple[str, str]] = [
-    ("Gemma-2-2B\nspanish", "gemma/spanish"),
-    ("Gemma-2-2B\nfrench", "gemma/french"),
-    ("Llama-3.1-8B\nlowercase", "llama31/lowercase"),
-    ("Llama-3.1-8B\nspanish", "llama31/spanish"),
-    (r"Gemma-2-2B" + "\n" + r"has\_bold\_only", "gemma/has_bold_only"),
+    ("Gemma-2B\nspanish",    "gemma/spanish"),
+    ("Gemma-2B\nfrench",     "gemma/french"),
+    ("Gemma-2B\nlowercase",  "gemma/lowercase"),
+    ("Gemma-2B\nbold",       "gemma/has_bold_only"),
+    ("Llama-8B\nspanish",    "llama31/spanish"),
+    ("Llama-8B\nfrench",     "llama31/french"),
+    ("Llama-8B\nlowercase",  "llama31/lowercase"),
+    ("Llama-8B\nbold",       "llama31/has_bold_only"),
 ]
 
 REQUIRED_KEYS = (
@@ -85,7 +89,7 @@ def main() -> None:
             f"{r['delta_cos']:>8.4f} {r['n_total_modifications']:>7d} {r['n_texts_modified']:>7d}"
         )
 
-    fig, ax = plt.subplots(figsize=(11, 5))
+    fig, ax = plt.subplots(figsize=(14, 5))
 
     xs = list(range(len(rows)))
     clean_vals = [r["cos_clean"] for r in rows]
@@ -141,7 +145,7 @@ def main() -> None:
         )
 
     ax.set_xticks(xs)
-    ax.set_xticklabels([r["label"] for r in rows], fontsize=13)
+    ax.set_xticklabels([r["label"] for r in rows], fontsize=12)
     ax.set_ylabel(r"$\cos(\mathbf{v},\ -\mathbf{r})$")
     ax.set_xlabel("")
     ax.tick_params(axis="x", pad=4)

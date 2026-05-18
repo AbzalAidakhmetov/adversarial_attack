@@ -27,13 +27,17 @@ PROJECT_ROOT = Path("/media/donato/Extra-storage/Code/mech-interp/adversarial_at
 RESULTS_DIR = PROJECT_ROOT / "results"
 OUTPUT_DIR = PROJECT_ROOT / "paper" / "figures"
 
-# (display label, experiment subdirectory)
-COMBOS: list[tuple[str, str]] = [
-    ("Gemma spanish", "gemma/spanish"),
-    ("Gemma french", "gemma/french"),
-    ("Llama lowercase", "llama31/lowercase"),
-    ("Llama spanish", "llama31/spanish"),
-    (r"Gemma has\_bold\_only", "gemma/has_bold_only"),
+# (display label, experiment subdirectory, optional (dx, dy) label offset in
+# axis-fraction units; if None we use the default (small) offset).
+COMBOS: list[tuple[str, str, tuple[float, float] | None]] = [
+    ("Gemma spanish",    "gemma/spanish",         (0.015, 0.025)),
+    ("Gemma french",     "gemma/french",          (0.015, 0.025)),
+    ("Gemma lowercase",  "gemma/lowercase",       (0.015, -0.045)),
+    ("Gemma bold",       "gemma/has_bold_only",   (0.015, -0.045)),
+    ("Llama spanish",    "llama31/spanish",       (-0.015, -0.045)),
+    ("Llama french",     "llama31/french",        (-0.015, 0.025)),
+    ("Llama lowercase",  "llama31/lowercase",     (0.015, -0.045)),
+    ("Llama bold",       "llama31/has_bold_only", (-0.015, 0.025)),
 ]
 
 ACCENT = POISONED
@@ -63,7 +67,8 @@ def _judge_success_rate(results_dir: Path) -> float:
     return float(entry["judge_success_rate"])
 
 
-def load_combo(label: str, subdir: str) -> dict:
+def load_combo(label: str, subdir: str,
+               offset: tuple[float, float] | None = None) -> dict:
     combo_dir = RESULTS_DIR / subdir
     summary = _read_json(combo_dir / "summary.json")
     if not isinstance(summary, dict) or "delta_cos" not in summary:
@@ -79,11 +84,13 @@ def load_combo(label: str, subdir: str) -> dict:
         "asr_clean": asr_clean,
         "asr_poisoned": asr_poisoned,
         "delta_asr": asr_poisoned - asr_clean,
+        "offset": offset,
     }
 
 
 def main() -> None:
-    rows = [load_combo(label, subdir) for label, subdir in COMBOS]
+    rows = [load_combo(label, subdir, off)
+            for label, subdir, off in COMBOS]
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -140,19 +147,30 @@ def main() -> None:
         zorder=3,
     )
 
-    # Annotate each point. Use a small offset so the text doesn't sit on the dot.
+    # Annotate each point. Default offset places the label up-right of the dot;
+    # per-combo overrides handle overlaps where two points sit close.
     x_span = x_hi - x_lo
     y_span = y_hi - y_lo
-    dx = 0.022 * x_span
-    dy = 0.022 * y_span
+    default_dx = 0.022 * x_span
+    default_dy = 0.022 * y_span
     for r, x, y in zip(rows, xs, ys):
+        off = r.get("offset")
+        if off is None:
+            tx, ty = x + default_dx, y + default_dy
+            ha, va = "left", "bottom"
+        else:
+            dx_frac, dy_frac = off
+            tx = x + dx_frac * x_span
+            ty = y + dy_frac * y_span
+            ha = "left" if dx_frac >= 0 else "right"
+            va = "bottom" if dy_frac >= 0 else "top"
         ax.annotate(
             r["label"],
             xy=(x, y),
-            xytext=(x + dx, y + dy),
+            xytext=(tx, ty),
             fontsize=13,
             color=PALETTE["Rich black"],
-            ha="left", va="bottom",
+            ha=ha, va=va,
             zorder=4,
         )
 

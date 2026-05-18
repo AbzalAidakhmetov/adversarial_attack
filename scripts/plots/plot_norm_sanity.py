@@ -4,8 +4,10 @@ Two panels:
   A) poisoned/clean steering vector norm ratio (per combo).
   B) Response perplexity on harmless prompts, clean vs poisoned (paired).
 
-Combos are ordered by ΔASR descending (consistent with the main results figure),
-where ASR is read from ``results_*_harmful/results`` (judge_success_rate).
+Combos are grouped by model (Gemma block, then Llama block, with a visual
+gap between groups) and sorted by ΔASR descending within each group, matching
+the layout of :func:`plot_main_results`. ASR is read from
+``results_*_harmful/results`` (judge_success_rate).
 
 Run from the project root::
 
@@ -25,7 +27,14 @@ import numpy as np
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _donstyle import apply_style, CLEAN, POISONED, PALETTE
+from _donstyle import (
+    apply_style,
+    CLEAN,
+    POISONED,
+    PALETTE,
+    group_by_model_layout,
+    draw_model_subrow,
+)
 
 apply_style()
 
@@ -34,13 +43,22 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 RESULTS_ROOT = PROJECT_ROOT / "results"
 FIG_DIR = PROJECT_ROOT / "paper" / "figures"
 
-# (display label, experiment directory name) pairs.
-COMBOS: list[tuple[str, str]] = [
-    ("Gemma-2-2B\nspanish", "gemma/spanish"),
-    ("Gemma-2-2B\nfrench", "gemma/french"),
-    ("Llama-3.1-8B\nlowercase", "llama31/lowercase"),
-    ("Llama-3.1-8B\nspanish", "llama31/spanish"),
-    (r"Gemma-2-2B" + "\n" + r"has\_bold\_only", "gemma/has_bold_only"),
+# Model order for grouping on the x-axis (left -> right) and horizontal
+# spacing, matching plot_main_results.py.
+MODEL_ORDER: list[str] = ["Gemma-2-2B", "Llama-3.1-8B"]
+INTRA_GAP: float = 1.6
+GROUP_GAP: float = 1.4
+
+# (attribute-only label, model display name, experiment directory).
+COMBOS: list[tuple[str, str, str]] = [
+    ("spanish",   "Gemma-2-2B",   "gemma/spanish"),
+    ("french",    "Gemma-2-2B",   "gemma/french"),
+    ("lowercase", "Gemma-2-2B",   "gemma/lowercase"),
+    ("bold",      "Gemma-2-2B",   "gemma/has_bold_only"),
+    ("spanish",   "Llama-3.1-8B", "llama31/spanish"),
+    ("french",    "Llama-3.1-8B", "llama31/french"),
+    ("lowercase", "Llama-3.1-8B", "llama31/lowercase"),
+    ("bold",      "Llama-3.1-8B", "llama31/has_bold_only"),
 ]
 
 COLOR_CLEAN = CLEAN
@@ -105,7 +123,7 @@ def main() -> None:
     FIG_DIR.mkdir(parents=True, exist_ok=True)
 
     rows = []
-    for label, dirname in COMBOS:
+    for label, model, dirname in COMBOS:
         combo_dir = RESULTS_ROOT / dirname
         if not combo_dir.is_dir():
             raise FileNotFoundError(f"missing experiment directory: {combo_dir}")
@@ -115,6 +133,7 @@ def main() -> None:
         rows.append(
             {
                 "label": label,
+                "model": model,
                 "dirname": dirname,
                 "norm_clean": norm_clean,
                 "norm_poisoned": norm_poisoned,
@@ -127,13 +146,16 @@ def main() -> None:
             }
         )
 
-    # Order by ΔASR descending (consistent with the main results figure).
-    rows.sort(key=lambda r: r["delta_asr"], reverse=True)
+    # Group by model (with ΔASR-desc inside each group), matching
+    # plot_main_results.py.
+    rows, x_positions, group_spans = group_by_model_layout(
+        rows, MODEL_ORDER, intra_gap=INTRA_GAP, group_gap=GROUP_GAP,
+    )
 
-    print("Final combo ordering (by ΔASR desc):")
+    print("Final combo ordering (grouped by model, ΔASR desc within group):")
     for r in rows:
         print(
-            f"  {r['dirname']:<32}  ΔASR={r['delta_asr']:+.3f}  "
+            f"  [{r['model']:<13}] {r['dirname']:<32}  ΔASR={r['delta_asr']:+.3f}  "
             f"norm {r['norm_clean']:.3f} -> {r['norm_poisoned']:.3f} "
             f"(x{r['ratio']:.3f})  ppl {r['ppl_clean']:.2f} -> {r['ppl_poisoned']:.2f}"
         )
@@ -143,9 +165,10 @@ def main() -> None:
     ppl_clean = np.array([r["ppl_clean"] for r in rows], dtype=float)
     ppl_poisoned = np.array([r["ppl_poisoned"] for r in rows], dtype=float)
 
-    fig, (axA, axB) = plt.subplots(1, 2, figsize=(12, 4.6))
+    fig, (axA, axB) = plt.subplots(1, 2, figsize=(14, 5.0))
 
-    x = np.arange(len(rows))
+    x = np.array(x_positions, dtype=float)
+    side_pad = 0.5 * INTRA_GAP
 
     # ---- Panel A: norm ratio --------------------------------------------------
     axA.axhline(1.0, color=COLOR_REF, linestyle="--", linewidth=1.2,
@@ -171,15 +194,11 @@ def main() -> None:
     axA.set_xticks(x)
     axA.set_xticklabels(labels, fontsize=12)
     axA.tick_params(axis="y", labelsize=12)
-    axA.set_xlim(-0.5, len(rows) - 0.5)
+    axA.set_xlim(x[0] - side_pad, x[-1] + side_pad)
     axA.set_ylabel(r"$\|\mathbf{v}_{\mathrm{poisoned}}\| \,/\, \|\mathbf{v}_{\mathrm{clean}}\|$")
     axA.set_title(r"A. Steering-vector norm ratio", fontsize=14, loc="left", pad=8)
-    axA.text(
-        0.02, 0.97, r"no inflation",
-        transform=axA.transAxes, fontsize=11,
-        color=COLOR_REF, alpha=0.6, va="top",
-    )
     axA.grid(axis="y", linestyle="--", linewidth=0.7, alpha=0.4)
+    draw_model_subrow(axA, group_spans)
 
     # ---- Panel B: response perplexity ----------------------------------------
     for xi, pc, pp in zip(x, ppl_clean, ppl_poisoned):
@@ -200,13 +219,16 @@ def main() -> None:
     axB.set_xticks(x)
     axB.set_xticklabels(labels, fontsize=12)
     axB.tick_params(axis="y", labelsize=12)
-    axB.set_xlim(-0.5, len(rows) - 0.5)
+    axB.set_xlim(x[0] - side_pad, x[-1] + side_pad)
     axB.set_ylabel(r"Response perplexity (harmless)")
     axB.set_title(r"B. Benign-response perplexity", fontsize=14, loc="left", pad=8)
     axB.grid(axis="y", linestyle="--", linewidth=0.7, alpha=0.4)
     axB.legend(loc="best", frameon=False, fontsize=12, handletextpad=0.5)
+    draw_model_subrow(axB, group_spans)
 
     fig.tight_layout()
+    # reserve space at the bottom for the model sub-row labels
+    fig.subplots_adjust(bottom=0.18)
 
     pdf_path = FIG_DIR / "fig_norm_sanity.pdf"
     png_path = FIG_DIR / "fig_norm_sanity.png"
