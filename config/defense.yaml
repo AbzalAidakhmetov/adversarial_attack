@@ -1,0 +1,6 @@
+# Refusal-direction orthogonalization defense over the (model × attribute) matrix.
+# Reuses each cell's `steering_vector.pt` (must already exist; run run_matrix
+# first), then evaluates the defended vector at the same weight sweep.
+defaults:
+  - matrix
+  - _self_

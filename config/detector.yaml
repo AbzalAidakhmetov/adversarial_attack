@@ -1,0 +1,14 @@
+# cos(v, -r) detector + adaptive-attacker bypass over the (model × attribute) matrix.
+#
+# Static phase: for each unique (model, layer) tuple in `models`, run
+# `advsteer.eval.cos_detector` once to build the null distribution + ROC.
+# Bypass phase: for each (model × attribute) × cap, re-run the GCG attack with
+# `--cos_max=cap` and evaluate ASR + hAttr (poisoned-only) at the weight sweep.
+defaults:
+  - matrix
+  - _self_
+
+caps: [0.05, 0.10, 0.15, 0.20]
+
+detector:
+  num_pairs: 20

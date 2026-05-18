@@ -1,0 +1,42 @@
+# Full (model × attribute) attack + eval matrix.
+# Consumed by scripts/run_matrix.py (which also dispatches under SLURM via
+# slurm/run_matrix.sh). Every cell runs: GCG attack + ASR eval sweep over
+# `weights × {clean,poisoned} × {harmful,harmless}`.
+
+models:
+  - name: gemma
+    hf_id: google/gemma-2-2b-it
+    layer: 14
+  - name: llama31
+    hf_id: meta-llama/Meta-Llama-3.1-8B-Instruct
+    layer: 18
+
+attributes:
+  - spanish
+  - french
+  - has_bold_only
+  - lowercase
+
+weights: [2, 3, 4]
+
+attack:
+  num_pairs: 20
+  n_modify: 5
+  n_neighbors: 100
+  lambda_lm: 0.2
+  max_perp: 2000
+  gcg_budget: 1500
+  gcg_patience: 500
+  n_candidates: 64
+  n_swaps: 1
+  eval_batch_size: 8
+  dtype: bfloat16
+
+eval:
+  val_samples: 100
+  harmless_prompts: data/refusal/harmless_prompts.json
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null

@@ -256,3 +256,5 @@ paper
 # Defense run artifacts
 src/advsteer/defense/*_results.json
 src/advsteer/defense/*.log
+
+slurm/logs/*

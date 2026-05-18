@@ -1,21 +1,19 @@
 #!/bin/bash
-# SLURM wrapper for scripts/run_defense.sh — submitted as a job array of size
-# 8, one GPU per combo (4 Llama heavy + 4 Gemma light combos, in the order
-# HEAVY_COMBOS then LIGHT_COMBOS from scripts/run_defense.sh).
+# SLURM array wrapper for scripts/run_defense.py — one task per (model × attribute)
+# cell from config/defense.yaml (which extends config/matrix.yaml). Each task
+# orthogonalizes that cell's steering_vector.pt and runs the eval sweep
+# (weights × {clean,poisoned} × {harmful,harmless}) on the defended vector.
 #
-# Each array task orthogonalizes the existing steering_vector.pt for one
-# combo and then runs 4 ASR evals (clean/poisoned × harmful/harmless on the
-# defended vector). No GCG re-run. Walltime ≈ longest single combo's evals
-# (~2-3 h on Llama-8B); 4 h walltime for headroom.
+# Requires the matrix attack to have run first (steering_vector.pt per cell).
 #
-# Submit with:
-#   sbatch slurm/run_defense.sh
+# Submit:    sbatch --array=0-7 slurm/run_defense.sh
+# Subset:    sbatch --array=0,4 slurm/run_defense.sh
+#
 #SBATCH -D /leonardo_work/IscrC_TVU/dcrisost/adversarial_attack
 #SBATCH --job-name=adv-defense
-#SBATCH --output=./slurm/%x-%A_%a.out
-#SBATCH --error=./slurm/%x-%A_%a.err
-#SBATCH --array=0-7
-#SBATCH --time=4:00:00
+#SBATCH --output=./slurm/logs/%x-%A_%a.out
+#SBATCH --error=./slurm/logs/%x-%A_%a.err
+#SBATCH --time=06:00:00
 #SBATCH --ntasks=1
 #SBATCH --mem=60G
 #SBATCH --partition=boost_usr_prod
@@ -29,7 +27,15 @@ export http_proxy='http://login01:3133'
 export https_proxy='http://login01:3133'
 
 export HF_HOME="${HF_HOME:-/leonardo_work/IscrC_TVU/dcrisost/.cache/huggingface}"
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export PROJECT_ROOT="$(pwd)"
 
-mkdir -p slurm results
+set +u
+source .env
+set -u
+export HF_TOKEN
+export ANTHROPIC_API_KEY
 
-bash scripts/run_defense.sh
+mkdir -p slurm/logs results
+
+srun uv run python scripts/run_defense.py

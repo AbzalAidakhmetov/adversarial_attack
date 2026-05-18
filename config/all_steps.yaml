@@ -1,0 +1,9 @@
+# all_steps protocol re-evaluation (Arditi et al. 2024): steering applied at
+# prefill AND every decode step. Reuses each cell's `steering_vector.pt`
+# (must already exist; run run_matrix first). The compliant→degenerate window
+# narrows under all_steps, so the weight sweep is lower than the prefill default.
+defaults:
+  - matrix
+  - _self_
+
+weights: [1.5, 1.75, 2.0]

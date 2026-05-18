@@ -1,18 +1,23 @@
 #!/bin/bash
-# SLURM wrapper for scripts/run_detector.sh — cos detector + cos-cap bypass sweep.
+# SLURM array wrapper for scripts/run_detector.py — cos detector + cos-cap
+# bypass sweep. One task per (model × attribute) cell from config/detector.yaml
+# (which extends config/matrix.yaml). Each task runs:
+#   (A) static cos_detector for the task's model (skip-if-exists, so the work
+#       is done once across the array)
+#   (B) for each cap in cfg.caps: re-run the GCG attack with `--cos_max=cap`
+#       and evaluate poisoned ASR + hAttr at the weight sweep.
 #
-# This is the longest job: 5 combos x 4 cos_max caps = 20 GCG attacks, each
-# followed by 2 ASR evals. The static-detection (A) phase is cheap; the
-# adaptive-attacker (B) sweep dominates the walltime. Set to the 24 h
-# partition cap; re-run to pick up where it left off (the script is restartable).
+# The cell loops over |caps| × |weights| × 2 evals so walltime is sized
+# generously. Re-run picks up where it left off via skip-if-exists.
 #
-# Submit with:
-#   sbatch slurm/run_detector.sh
+# Submit:    sbatch --array=0-7 slurm/run_detector.sh
+# Subset:    sbatch --array=0,4 slurm/run_detector.sh
+#
 #SBATCH -D /leonardo_work/IscrC_TVU/dcrisost/adversarial_attack
-#SBATCH --job-name=adv-run-detector
-#SBATCH --output=./slurm/%x-%j.out
-#SBATCH --error=./slurm/%x-%j.err
-#SBATCH --time=24:00:00
+#SBATCH --job-name=adv-detector
+#SBATCH --output=./slurm/logs/%x-%A_%a.out
+#SBATCH --error=./slurm/logs/%x-%A_%a.err
+#SBATCH --time=12:00:00
 #SBATCH --ntasks=1
 #SBATCH --mem=60G
 #SBATCH --partition=boost_usr_prod
@@ -26,7 +31,15 @@ export http_proxy='http://login01:3133'
 export https_proxy='http://login01:3133'
 
 export HF_HOME="${HF_HOME:-/leonardo_work/IscrC_TVU/dcrisost/.cache/huggingface}"
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export PROJECT_ROOT="$(pwd)"
 
-mkdir -p slurm results
+set +u
+source .env
+set -u
+export HF_TOKEN
+export ANTHROPIC_API_KEY
 
-bash scripts/run_detector.sh
+mkdir -p slurm/logs results
+
+srun uv run python scripts/run_detector.py

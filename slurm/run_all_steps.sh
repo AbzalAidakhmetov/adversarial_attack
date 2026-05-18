@@ -1,17 +1,18 @@
 #!/bin/bash
-# SLURM wrapper for scripts/run_all_steps.sh — 2-combo all-steps reproduction.
+# SLURM array wrapper for scripts/run_all_steps.py — one task per (model × attribute)
+# cell. Reuses each cell's prefill steering_vector.pt and re-evaluates with the
+# `all_steps` protocol at the lower weights configured in config/all_steps.yaml.
 #
-# Reuses steering_vector.pt from prior run_best.sh results when available,
-# so the GCG attack only runs if those are missing. Time budget is set to 8 h
-# to cover the worst case (both vectors need to be built from scratch).
+# Requires the matrix attack to have run first (steering_vector.pt per cell).
 #
-# Submit with:
-#   sbatch slurm/run_all_steps.sh
+# Submit:    sbatch --array=0-7 slurm/run_all_steps.sh
+# Subset:    sbatch --array=0,7 slurm/run_all_steps.sh
+#
 #SBATCH -D /leonardo_work/IscrC_TVU/dcrisost/adversarial_attack
-#SBATCH --job-name=adv-run-all-steps
-#SBATCH --output=./slurm/%x-%j.out
-#SBATCH --error=./slurm/%x-%j.err
-#SBATCH --time=08:00:00
+#SBATCH --job-name=adv-all-steps
+#SBATCH --output=./slurm/logs/%x-%A_%a.out
+#SBATCH --error=./slurm/logs/%x-%A_%a.err
+#SBATCH --time=06:00:00
 #SBATCH --ntasks=1
 #SBATCH --mem=60G
 #SBATCH --partition=boost_usr_prod
@@ -25,7 +26,15 @@ export http_proxy='http://login01:3133'
 export https_proxy='http://login01:3133'
 
 export HF_HOME="${HF_HOME:-/leonardo_work/IscrC_TVU/dcrisost/.cache/huggingface}"
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export PROJECT_ROOT="$(pwd)"
 
-mkdir -p slurm results
+set +u
+source .env
+set -u
+export HF_TOKEN
+export ANTHROPIC_API_KEY
 
-bash scripts/run_all_steps.sh
+mkdir -p slurm/logs results
+
+srun uv run python scripts/run_all_steps.py
