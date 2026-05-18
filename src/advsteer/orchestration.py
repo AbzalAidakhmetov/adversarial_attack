@@ -21,9 +21,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-
-def project_root() -> Path:
-    return Path(os.environ.get("PROJECT_ROOT", os.getcwd())).resolve()
+from . import PROJECT_ROOT
 
 
 def iter_cells(cfg) -> list[tuple]:

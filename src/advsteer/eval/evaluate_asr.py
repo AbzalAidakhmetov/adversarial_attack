@@ -9,10 +9,10 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from tqdm import tqdm
 import hydra
 
+from advsteer import PROJECT_ROOT
 from advsteer.classifiers import evaluate_perplexity, set_seed, evaluate_jailbreak
 from advsteer.steering import generate_steered_batched, evaluate_steering
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
 import logging
 
 logging.getLogger("LiteLLM").setLevel(logging.WARNING)

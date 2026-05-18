@@ -27,6 +27,7 @@ import numpy as np
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from advsteer import PROJECT_ROOT
 from _donstyle import (
     apply_style,
     CLEAN,
@@ -41,7 +42,6 @@ from _donstyle import (
 apply_style()
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 RESULTS_ROOT = PROJECT_ROOT / "results"
 FIG_DIR = PROJECT_ROOT / "paper" / "figures"
 

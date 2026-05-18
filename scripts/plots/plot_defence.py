@@ -18,12 +18,12 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from advsteer import PROJECT_ROOT
 from _donstyle import apply_style, CLEAN, POISONED, DEFENDED, PALETTE, LINE, ACCENT
 
 apply_style()
 
 
-PROJECT_ROOT = Path("/media/donato/Extra-storage/Code/mech-interp/adversarial_attack")
 RESULTS_DIR = PROJECT_ROOT / "results"
 OUTPUT_DIR = PROJECT_ROOT / "paper" / "figures"
 

@@ -17,7 +17,8 @@ from pathlib import Path
 import hydra
 from omegaconf import DictConfig
 
-from advsteer.orchestration import eval_sweep, iter_cells, project_root
+from advsteer import PROJECT_ROOT
+from advsteer.orchestration import eval_sweep, iter_cells
 
 
 def run_cell(cfg: DictConfig, root: Path, model, attr: str) -> int:
@@ -43,7 +44,7 @@ def run_cell(cfg: DictConfig, root: Path, model, attr: str) -> int:
 
 @hydra.main(config_path="../config", config_name="all_steps", version_base=None)
 def main(cfg: DictConfig) -> None:
-    root = project_root()
+    root = PROJECT_ROOT
     rc = 0
     for model, attr in iter_cells(cfg):
         if run_cell(cfg, root, model, attr) != 0:

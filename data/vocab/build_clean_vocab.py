@@ -25,7 +25,8 @@ from dotenv import load_dotenv
 from together import Together
 from tqdm import tqdm
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+from advsteer import PROJECT_ROOT
+
 load_dotenv(PROJECT_ROOT / ".env")
 
 OUTPUT_PATH = PROJECT_ROOT / "data" / "vocab" / "safe_vocab.json"

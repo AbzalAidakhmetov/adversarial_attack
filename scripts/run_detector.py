@@ -24,8 +24,9 @@ from pathlib import Path
 import hydra
 from omegaconf import DictConfig
 
+from advsteer import PROJECT_ROOT
 from advsteer.orchestration import (
-    attack_cmd, eval_sweep, iter_cells, project_root, run_subprocess,
+    attack_cmd, eval_sweep, iter_cells, run_subprocess,
 )
 
 
@@ -87,7 +88,7 @@ def run_bypass_cell(cfg: DictConfig, root: Path, model, attr: str) -> int:
 
 @hydra.main(config_path="../config", config_name="detector", version_base=None)
 def main(cfg: DictConfig) -> None:
-    root = project_root()
+    root = PROJECT_ROOT
     cells = iter_cells(cfg)
 
     # Static phase: dedup by (model.name, model.layer) across whichever cells

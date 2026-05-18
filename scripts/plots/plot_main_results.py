@@ -30,6 +30,7 @@ import sys
 import matplotlib.pyplot as plt
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from advsteer import PROJECT_ROOT
 from _donstyle import (
     apply_style,
     CLEAN,
@@ -44,9 +45,6 @@ from _donstyle import (
 apply_style()
 
 
-PROJECT_ROOT = Path(
-    "/media/donato/Extra-storage/Code/mech-interp/adversarial_attack"
-)
 DEFAULT_RESULTS_ROOT = PROJECT_ROOT / "results"
 DEFAULT_OUT_DIR = PROJECT_ROOT / "paper" / "figures"
 DEFAULT_FIG_STEM = "fig_main_results"
