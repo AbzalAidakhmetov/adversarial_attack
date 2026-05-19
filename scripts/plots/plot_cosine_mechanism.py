@@ -1,14 +1,17 @@
 """Plot the cosine-rotation mechanism: clean vs poisoned cos(v, -r) per combo.
 
-Replaces Table 2 of the paper. Reads each combo's summary.json (no hard-coded
-numbers) and renders a paired arrow/dot plot sorted by Delta cos (descending).
+Replaces Table 2 of the paper. Reads each combo's per-seed summary.json
+(``results/<model>/<attr>/seed{0,1,2}/summary.json``) and renders a paired
+arrow/dot plot sorted by Delta cos (descending). The clean steering vector
+is deterministic so ``cos_clean`` has no per-seed dispersion; ``cos_poisoned``
+varies with the GCG seed and is shown with a ±1 std error bar. The annotated
+edit count is the mean over seeds.
 
 Run: .venv/bin/python scripts/plots/plot_cosine_mechanism.py
 """
 
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 
@@ -16,7 +19,13 @@ import matplotlib.pyplot as plt
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from advsteer import PROJECT_ROOT
-from _donstyle import apply_style, CLEAN, POISONED, PALETTE, REF, ACCENT
+from _donstyle import apply_style, CLEAN, POISONED, REF, ACCENT
+from _seeds import (
+    Aggregate,
+    aggregate_from_seeds,
+    fmt_mean_std,
+    summary_extractor,
+)
 
 apply_style()
 
@@ -24,8 +33,6 @@ apply_style()
 RESULTS_DIR = PROJECT_ROOT / "results"
 OUTPUT_DIR = PROJECT_ROOT / "paper" / "figures"
 
-# (display label, experiment subdirectory) -- cosine is weight-independent
-# (it depends only on summary.json's cos_clean/cos_poisoned).
 COMBOS: list[tuple[str, str]] = [
     ("Gemma-2B\nspanish",    "gemma/spanish"),
     ("Gemma-2B\nfrench",     "gemma/french"),
@@ -37,14 +44,6 @@ COMBOS: list[tuple[str, str]] = [
     ("Llama-8B\nbold",       "llama31/has_bold_only"),
 ]
 
-REQUIRED_KEYS = (
-    "cos_clean",
-    "cos_poisoned",
-    "delta_cos",
-    "n_total_modifications",
-    "n_texts_modified",
-)
-
 COLOR_CLEAN = CLEAN
 COLOR_POISONED = POISONED
 COLOR_ARROW = ACCENT
@@ -52,62 +51,64 @@ COLOR_ZERO = REF
 
 
 def load_combo(label: str, subdir: str) -> dict:
-    summary_path = RESULTS_DIR / subdir / "summary.json"
-    if not summary_path.is_file():
-        raise FileNotFoundError(f"Missing summary.json: {summary_path}")
-    with summary_path.open() as f:
-        data = json.load(f)
-    missing = [k for k in REQUIRED_KEYS if k not in data]
-    if missing:
-        raise KeyError(
-            f"summary.json at {summary_path} is missing required keys: {missing}"
-        )
+    combo_dir = RESULTS_DIR / subdir
+    cos_clean = aggregate_from_seeds(combo_dir, summary_extractor("cos_clean"))
+    cos_poisoned = aggregate_from_seeds(combo_dir, summary_extractor("cos_poisoned"))
+    n_mods = aggregate_from_seeds(combo_dir, summary_extractor("n_total_modifications"))
+    n_texts = aggregate_from_seeds(combo_dir, summary_extractor("n_texts_modified"))
     return {
         "label": label,
         "subdir": subdir,
-        "cos_clean": float(data["cos_clean"]),
-        "cos_poisoned": float(data["cos_poisoned"]),
-        "delta_cos": float(data["delta_cos"]),
-        "n_total_modifications": int(data["n_total_modifications"]),
-        "n_texts_modified": int(data["n_texts_modified"]),
+        "cos_clean": cos_clean,
+        "cos_poisoned": cos_poisoned,
+        "delta_cos": cos_poisoned.mean - cos_clean.mean,
+        "n_total_modifications": n_mods,
+        "n_texts_modified": n_texts,
     }
 
 
 def main() -> None:
     rows = [load_combo(label, subdir) for label, subdir in COMBOS]
-    # Sort by delta_cos descending (largest rotation on the left).
     rows.sort(key=lambda r: r["delta_cos"], reverse=True)
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Report data (also useful for the caller's logs).
-    print(f"{'combo':<40} {'cos_clean':>10} {'cos_poison':>11} {'Δcos':>8} {'edits':>7} {'texts':>7}")
+    print(
+        f"{'combo':<40} {'cos_clean':>16} {'cos_poison':>18} {'Δcos':>8} "
+        f"{'edits (mean±std)':>20} {'texts':>18}"
+    )
     for r in rows:
         flat = r["label"].replace("\n", " ")
         print(
-            f"{flat:<40} {r['cos_clean']:>10.4f} {r['cos_poisoned']:>11.4f} "
-            f"{r['delta_cos']:>8.4f} {r['n_total_modifications']:>7d} {r['n_texts_modified']:>7d}"
+            f"{flat:<40} "
+            f"{fmt_mean_std(r['cos_clean']):>16} "
+            f"{fmt_mean_std(r['cos_poisoned']):>18} "
+            f"{r['delta_cos']:>8.4f} "
+            f"{fmt_mean_std(r['n_total_modifications'], '{:.0f}'):>20} "
+            f"{fmt_mean_std(r['n_texts_modified'], '{:.0f}'):>18}"
         )
 
     fig, ax = plt.subplots(figsize=(14, 5))
 
     xs = list(range(len(rows)))
-    clean_vals = [r["cos_clean"] for r in rows]
-    poison_vals = [r["cos_poisoned"] for r in rows]
+    clean_means = [r["cos_clean"].mean for r in rows]
+    poison_means = [r["cos_poisoned"].mean for r in rows]
+    poison_stds = [r["cos_poisoned"].std for r in rows]
 
-    # y limits: include 0 and all observed values with margin.
-    all_vals = clean_vals + poison_vals + [0.0]
+    # y-limits: include zero, all observed values (incl. error-bar tips), with margin.
+    all_vals = clean_means + poison_means + [0.0]
+    for m, s in zip(poison_means, poison_stds):
+        all_vals.extend([m - s, m + s])
     y_min, y_max = min(all_vals), max(all_vals)
     span = y_max - y_min if y_max > y_min else 1.0
     pad = 0.18 * span
-    ax.set_ylim(y_min - pad, y_max + pad * 1.6)  # extra headroom for annotations
+    ax.set_ylim(y_min - pad, y_max + pad * 1.6)
 
-    # Zero reference line.
     ax.axhline(0.0, color=COLOR_ZERO, linestyle="--", linewidth=1.2,
                alpha=0.5, zorder=0)
 
-    # Arrows from clean -> poisoned (drawn first so dots sit on top).
-    for x, c, p in zip(xs, clean_vals, poison_vals):
+    # Arrows from clean -> poisoned mean (drawn first so dots sit on top).
+    for x, c, p in zip(xs, clean_means, poison_means):
         ax.annotate(
             "",
             xy=(x, p),
@@ -122,22 +123,37 @@ def main() -> None:
             zorder=2,
         )
 
-    # Dots.
-    ax.scatter(xs, clean_vals, s=80, color=COLOR_CLEAN, zorder=3,
+    # Error bars on poisoned (clean has std=0 by construction).
+    for x, m, s in zip(xs, poison_means, poison_stds):
+        if s <= 1e-9:
+            continue
+        ax.errorbar(
+            x, m, yerr=s,
+            fmt="none",
+            ecolor=COLOR_POISONED,
+            elinewidth=1.4,
+            capsize=4,
+            capthick=1.2,
+            alpha=0.85,
+            zorder=2.5,
+        )
+
+    ax.scatter(xs, clean_means, s=40, color=COLOR_CLEAN, zorder=3,
                label="clean", edgecolors="white", linewidths=1.0)
-    ax.scatter(xs, poison_vals, s=80, color=COLOR_POISONED, zorder=3,
+    ax.scatter(xs, poison_means, s=40, color=COLOR_POISONED, zorder=3,
                label="poisoned", edgecolors="white", linewidths=1.0)
 
-    # "N edits / M texts" annotation above each combo.
     headroom_top = ax.get_ylim()[1]
     for x, r in zip(xs, rows):
-        top_y = max(r["cos_clean"], r["cos_poisoned"])
+        top_y = max(r["cos_clean"].mean,
+                    r["cos_poisoned"].mean + r["cos_poisoned"].std)
         ann_y = top_y + 0.06 * span
         ann_y = min(ann_y, headroom_top - 0.02 * span)
         ax.text(
             x,
             ann_y,
-            rf"{r['n_total_modifications']} edits / {r['n_texts_modified']} texts",
+            rf"{r['n_total_modifications'].mean:.0f} edits / "
+            rf"{r['n_texts_modified'].mean:.0f} texts",
             ha="center",
             va="bottom",
             fontsize=11,

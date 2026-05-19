@@ -1,13 +1,14 @@
 """Sanity-check figure for the steering-vector poisoning paper (Table 3).
 
 Two panels:
-  A) poisoned/clean steering vector norm ratio (per combo).
-  B) Response perplexity on harmless prompts, clean vs poisoned (paired).
+  A) poisoned/clean steering vector norm ratio (per combo, mean over seeds).
+  B) Response perplexity on harmless prompts, clean vs poisoned (paired,
+     mean over seeds with ±1 std error bars on the poisoned side).
 
 Combos are grouped by model (Gemma block, then Llama block, with a visual
 gap between groups) and sorted by ΔASR descending within each group, matching
-the layout of :func:`plot_main_results`. ASR is read from
-``results_*_harmful/results`` (judge_success_rate).
+the layout of :func:`plot_main_results`. Per-cell results are read across
+``results/<model>/<attr>/seed{0,1,2}/results_*_w<W>/...``.
 
 Run from the project root::
 
@@ -18,13 +19,11 @@ Outputs ``paper/figures/fig_norm_sanity.{pdf,png}``.
 
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
-import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from advsteer import PROJECT_ROOT
@@ -32,11 +31,17 @@ from _donstyle import (
     apply_style,
     CLEAN,
     POISONED,
-    PALETTE,
     REF,
     LINE,
     group_by_model_layout,
     draw_model_subrow,
+)
+from _seeds import (
+    Aggregate,
+    aggregate_from_seeds,
+    fmt_mean_std,
+    metric_extractor,
+    vector_norm_extractor,
 )
 
 apply_style()
@@ -45,22 +50,20 @@ apply_style()
 RESULTS_ROOT = PROJECT_ROOT / "results"
 FIG_DIR = PROJECT_ROOT / "paper" / "figures"
 
-# Model order for grouping on the x-axis (left -> right) and horizontal
-# spacing, matching plot_main_results.py.
 MODEL_ORDER: list[str] = ["Gemma-2-2B", "Llama-3.1-8B"]
 INTRA_GAP: float = 1.6
 GROUP_GAP: float = 1.4
 
-# (attribute-only label, model display name, experiment directory).
-COMBOS: list[tuple[str, str, str]] = [
-    ("spanish",   "Gemma-2-2B",   "gemma/spanish"),
-    ("french",    "Gemma-2-2B",   "gemma/french"),
-    ("lowercase", "Gemma-2-2B",   "gemma/lowercase"),
-    ("bold",      "Gemma-2-2B",   "gemma/has_bold_only"),
-    ("spanish",   "Llama-3.1-8B", "llama31/spanish"),
-    ("french",    "Llama-3.1-8B", "llama31/french"),
-    ("lowercase", "Llama-3.1-8B", "llama31/lowercase"),
-    ("bold",      "Llama-3.1-8B", "llama31/has_bold_only"),
+# (attribute-only label, model display name, experiment directory, bundled weight).
+COMBOS: list[tuple[str, str, str, int]] = [
+    ("spanish",   "Gemma-2-2B",   "gemma/spanish",         3),
+    ("french",    "Gemma-2-2B",   "gemma/french",          3),
+    ("lowercase", "Gemma-2-2B",   "gemma/lowercase",       4),
+    ("bold",      "Gemma-2-2B",   "gemma/has_bold_only",   4),
+    ("spanish",   "Llama-3.1-8B", "llama31/spanish",       3),
+    ("french",    "Llama-3.1-8B", "llama31/french",        4),
+    ("lowercase", "Llama-3.1-8B", "llama31/lowercase",     2),
+    ("bold",      "Llama-3.1-8B", "llama31/has_bold_only", 4),
 ]
 
 COLOR_CLEAN = CLEAN
@@ -68,88 +71,73 @@ COLOR_POISONED = POISONED
 COLOR_REF = REF
 
 
-def _require(path: Path) -> Path:
-    if not path.exists():
-        raise FileNotFoundError(f"missing required file: {path}")
-    return path
+def _norm_ratio_aggregate(combo_dir: Path) -> Aggregate:
+    """Per-seed ``||v_poisoned|| / ||v_clean||`` (both from that seed's .pt)."""
+    import torch
+
+    def _extract(seed_dir: Path) -> float:
+        pt = seed_dir / "steering_vector.pt"
+        if not pt.is_file():
+            raise FileNotFoundError(f"Missing {pt}")
+        d = torch.load(pt, map_location="cpu", weights_only=False)
+        nc = float(d["steering_vector_clean"].float().norm().item())
+        np_ = float(d["steering_vector_poisoned"].float().norm().item())
+        return np_ / nc
+
+    return aggregate_from_seeds(combo_dir, _extract)
 
 
-def _load_results_json(results_path: Path) -> dict:
-    """Load the single-element list at ``results`` and return its first entry."""
-    _require(results_path)
-    with results_path.open() as f:
-        data = json.load(f)
-    if not isinstance(data, list) or len(data) == 0:
-        raise ValueError(f"unexpected results structure in {results_path}: {data!r}")
-    return data[0]
+def load_row(label: str, model: str, dirname: str, weight: int) -> dict:
+    combo_dir = RESULTS_ROOT / dirname
+    if not combo_dir.is_dir():
+        raise FileNotFoundError(f"missing experiment directory: {combo_dir}")
 
-
-def load_norms(combo_dir: Path) -> tuple[float, float]:
-    sv_path = _require(combo_dir / "steering_vector.pt")
-    d = torch.load(sv_path, map_location="cpu", weights_only=False)
-    for key in ("steering_vector_clean", "steering_vector_poisoned"):
-        if key not in d:
-            raise KeyError(f"{sv_path} missing key {key!r}; keys={list(d)}")
-    norm_clean = d["steering_vector_clean"].float().norm().item()
-    norm_poisoned = d["steering_vector_poisoned"].float().norm().item()
-    return norm_clean, norm_poisoned
-
-
-def load_response_ppl(combo_dir: Path) -> tuple[float, float]:
-    clean = _load_results_json(combo_dir / "results_clean_harmless" / "results")
-    poisoned = _load_results_json(combo_dir / "results_poisoned_harmless" / "results")
-    for tag, entry in (("clean", clean), ("poisoned", poisoned)):
-        if "mean_perplexity" not in entry:
-            raise KeyError(
-                f"{combo_dir}/results_{tag}_harmless/results missing key 'mean_perplexity'"
-            )
-    return float(clean["mean_perplexity"]), float(poisoned["mean_perplexity"])
-
-
-def load_asr(combo_dir: Path) -> tuple[float, float]:
-    clean = _load_results_json(combo_dir / "results_clean_harmful" / "results")
-    poisoned = _load_results_json(combo_dir / "results_poisoned_harmful" / "results")
-    for tag, entry in (("clean", clean), ("poisoned", poisoned)):
-        if "judge_success_rate" not in entry:
-            raise KeyError(
-                f"{combo_dir}/results_{tag}_harmful/results missing key 'judge_success_rate'"
-            )
-        if entry["judge_success_rate"] is None:
-            raise ValueError(
-                f"{combo_dir}/results_{tag}_harmful/results has judge_success_rate=None"
-            )
-    return float(clean["judge_success_rate"]), float(poisoned["judge_success_rate"])
+    norm_clean = aggregate_from_seeds(
+        combo_dir, vector_norm_extractor("steering_vector_clean"),
+    )
+    norm_poisoned = aggregate_from_seeds(
+        combo_dir, vector_norm_extractor("steering_vector_poisoned"),
+    )
+    ratio = _norm_ratio_aggregate(combo_dir)
+    ppl_clean = aggregate_from_seeds(
+        combo_dir,
+        metric_extractor(f"results_clean_harmless_w{weight}", "mean_perplexity"),
+        drop_nan=True,
+    )
+    ppl_poisoned = aggregate_from_seeds(
+        combo_dir,
+        metric_extractor(f"results_poisoned_harmless_w{weight}", "mean_perplexity"),
+        drop_nan=True,
+    )
+    asr_clean = aggregate_from_seeds(
+        combo_dir,
+        metric_extractor(f"results_clean_harmful_w{weight}", "judge_success_rate"),
+    )
+    asr_poisoned = aggregate_from_seeds(
+        combo_dir,
+        metric_extractor(f"results_poisoned_harmful_w{weight}", "judge_success_rate"),
+    )
+    return {
+        "label": label,
+        "model": model,
+        "dirname": dirname,
+        "weight": weight,
+        "norm_clean": norm_clean,
+        "norm_poisoned": norm_poisoned,
+        "ratio": ratio,
+        "ppl_clean": ppl_clean,
+        "ppl_poisoned": ppl_poisoned,
+        "asr_clean": asr_clean,
+        "asr_poisoned": asr_poisoned,
+        "delta_asr": asr_poisoned.mean - asr_clean.mean,
+    }
 
 
 def main() -> None:
     FIG_DIR.mkdir(parents=True, exist_ok=True)
 
-    rows = []
-    for label, model, dirname in COMBOS:
-        combo_dir = RESULTS_ROOT / dirname
-        if not combo_dir.is_dir():
-            raise FileNotFoundError(f"missing experiment directory: {combo_dir}")
-        norm_clean, norm_poisoned = load_norms(combo_dir)
-        ppl_clean, ppl_poisoned = load_response_ppl(combo_dir)
-        asr_clean, asr_poisoned = load_asr(combo_dir)
-        rows.append(
-            {
-                "label": label,
-                "model": model,
-                "dirname": dirname,
-                "norm_clean": norm_clean,
-                "norm_poisoned": norm_poisoned,
-                "ratio": norm_poisoned / norm_clean,
-                "ppl_clean": ppl_clean,
-                "ppl_poisoned": ppl_poisoned,
-                "asr_clean": asr_clean,
-                "asr_poisoned": asr_poisoned,
-                "delta_asr": asr_poisoned - asr_clean,
-            }
-        )
+    rows = [load_row(label, model, dirname, w) for label, model, dirname, w in COMBOS]
 
-    # Group by model (with ΔASR-desc inside each group), matching
-    # plot_main_results.py.
     rows, x_positions, group_spans = group_by_model_layout(
         rows, MODEL_ORDER, intra_gap=INTRA_GAP, group_gap=GROUP_GAP,
     )
@@ -157,15 +145,21 @@ def main() -> None:
     print("Final combo ordering (grouped by model, ΔASR desc within group):")
     for r in rows:
         print(
-            f"  [{r['model']:<13}] {r['dirname']:<32}  ΔASR={r['delta_asr']:+.3f}  "
-            f"norm {r['norm_clean']:.3f} -> {r['norm_poisoned']:.3f} "
-            f"(x{r['ratio']:.3f})  ppl {r['ppl_clean']:.2f} -> {r['ppl_poisoned']:.2f}"
+            f"  [{r['model']:<13}] {r['dirname']:<28} w={r['weight']}  "
+            f"ΔASR={r['delta_asr']:+.3f}  "
+            f"norm {r['norm_clean'].mean:.3f} -> {fmt_mean_std(r['norm_poisoned'])} "
+            f"(ratio {fmt_mean_std(r['ratio'])})  "
+            f"ppl {fmt_mean_std(r['ppl_clean'], '{:.2f}')} -> "
+            f"{fmt_mean_std(r['ppl_poisoned'], '{:.2f}')}"
         )
 
     labels = [r["label"] for r in rows]
-    ratios = np.array([r["ratio"] for r in rows], dtype=float)
-    ppl_clean = np.array([r["ppl_clean"] for r in rows], dtype=float)
-    ppl_poisoned = np.array([r["ppl_poisoned"] for r in rows], dtype=float)
+    ratio_means = np.array([r["ratio"].mean for r in rows], dtype=float)
+    ratio_stds = np.array([r["ratio"].std for r in rows], dtype=float)
+    ppl_clean_means = np.array([r["ppl_clean"].mean for r in rows], dtype=float)
+    ppl_clean_stds = np.array([r["ppl_clean"].std for r in rows], dtype=float)
+    ppl_poisoned_means = np.array([r["ppl_poisoned"].mean for r in rows], dtype=float)
+    ppl_poisoned_stds = np.array([r["ppl_poisoned"].std for r in rows], dtype=float)
 
     fig, (axA, axB) = plt.subplots(1, 2, figsize=(14, 5.0))
 
@@ -175,23 +169,30 @@ def main() -> None:
     # ---- Panel A: norm ratio --------------------------------------------------
     axA.axhline(1.0, color=COLOR_REF, linestyle="--", linewidth=1.2,
                 alpha=0.5, zorder=1)
+    axA.errorbar(
+        x, ratio_means, yerr=ratio_stds,
+        fmt="none", ecolor=COLOR_POISONED,
+        elinewidth=1.4, capsize=4, capthick=1.2,
+        alpha=0.85, zorder=2,
+    )
     axA.scatter(
-        x, ratios, s=85, color=COLOR_POISONED,
+        x, ratio_means, s=42, color=COLOR_POISONED,
         edgecolor="white", linewidths=1.0, zorder=3,
     )
-    # Annotate the largest ratio.
-    max_idx = int(np.argmax(ratios))
+    max_idx = int(np.argmax(ratio_means))
     axA.annotate(
-        rf"${ratios[max_idx]:.2f}\times$",
-        xy=(x[max_idx], ratios[max_idx]),
+        rf"${ratio_means[max_idx]:.2f}\times$",
+        xy=(x[max_idx], ratio_means[max_idx]),
         xytext=(8, 6),
         textcoords="offset points",
         fontsize=12,
         color=COLOR_POISONED,
     )
 
-    y_lo = min(0.85, float(ratios.min()) - 0.05)
-    y_hi = max(1.30, float(ratios.max()) + 0.10)
+    band_lo = float(np.min(ratio_means - ratio_stds))
+    band_hi = float(np.max(ratio_means + ratio_stds))
+    y_lo = min(0.85, band_lo - 0.05)
+    y_hi = max(1.30, band_hi + 0.10)
     axA.set_ylim(y_lo, y_hi)
     axA.set_xticks(x)
     axA.set_xticklabels(labels, fontsize=12)
@@ -203,18 +204,30 @@ def main() -> None:
     draw_model_subrow(axA, group_spans)
 
     # ---- Panel B: response perplexity ----------------------------------------
-    for xi, pc, pp in zip(x, ppl_clean, ppl_poisoned):
+    for xi, pc, pp in zip(x, ppl_clean_means, ppl_poisoned_means):
         axB.plot(
             [xi, xi], [pc, pp],
             color=LINE,
             linewidth=1.6, alpha=0.75, zorder=1,
         )
-    axB.scatter(x, ppl_clean, s=80, color=COLOR_CLEAN,
+    # error bars (clean usually std=0, poisoned can vary)
+    for xi, m, s in zip(x, ppl_clean_means, ppl_clean_stds):
+        if s > 1e-9:
+            axB.errorbar(xi, m, yerr=s, fmt="none", ecolor=COLOR_CLEAN,
+                         elinewidth=1.2, capsize=4, capthick=1.0,
+                         alpha=0.8, zorder=2)
+    for xi, m, s in zip(x, ppl_poisoned_means, ppl_poisoned_stds):
+        if s > 1e-9:
+            axB.errorbar(xi, m, yerr=s, fmt="none", ecolor=COLOR_POISONED,
+                         elinewidth=1.2, capsize=4, capthick=1.0,
+                         alpha=0.8, zorder=2)
+
+    axB.scatter(x, ppl_clean_means, s=40, color=COLOR_CLEAN,
                 edgecolor="white", linewidths=1.0, label="clean", zorder=3)
-    axB.scatter(x, ppl_poisoned, s=80, color=COLOR_POISONED,
+    axB.scatter(x, ppl_poisoned_means, s=40, color=COLOR_POISONED,
                 edgecolor="white", linewidths=1.0, label="poisoned", zorder=3)
 
-    all_ppl = np.concatenate([ppl_clean, ppl_poisoned])
+    all_ppl = np.concatenate([ppl_clean_means, ppl_poisoned_means])
     span_ratio = float(all_ppl.max() / max(all_ppl.min(), 1e-9))
     if span_ratio > 5.0:
         axB.set_yscale("log")
@@ -229,7 +242,6 @@ def main() -> None:
     draw_model_subrow(axB, group_spans)
 
     fig.tight_layout()
-    # reserve space at the bottom for the model sub-row labels
     fig.subplots_adjust(bottom=0.18)
 
     pdf_path = FIG_DIR / "fig_norm_sanity.pdf"

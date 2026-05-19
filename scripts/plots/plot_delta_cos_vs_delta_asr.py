@@ -1,16 +1,16 @@
 """Scatter Delta cos vs Delta ASR per model-attribute combo.
 
 Optional figure: shows that Delta cos (rotation toward -r) broadly tracks Delta
-ASR (jailbreak lift) but is not its sole determinant. Reads each combo's
-summary.json (for delta_cos) and the corresponding results files (for ASRs).
-No hard-coded numbers.
+ASR (jailbreak lift) but is not its sole determinant. Each point is a per-combo
+mean over three GCG seeds; horizontal and vertical bars show ±1 std across
+seeds. Clean ``cos`` and clean ``ASR`` are seed-deterministic, so dispersion
+comes entirely from the poisoned side.
 
 Run: .venv/bin/python scripts/plots/plot_delta_cos_vs_delta_asr.py
 """
 
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 
@@ -19,7 +19,13 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from advsteer import PROJECT_ROOT
-from _donstyle import apply_style, POISONED, PALETTE, REF, LINE
+from _donstyle import apply_style, POISONED, REF, LINE
+from _seeds import (
+    aggregate_from_seeds,
+    fmt_mean_std,
+    metric_extractor,
+    summary_extractor,
+)
 
 apply_style()
 
@@ -27,17 +33,17 @@ apply_style()
 RESULTS_DIR = PROJECT_ROOT / "results"
 OUTPUT_DIR = PROJECT_ROOT / "paper" / "figures"
 
-# (display label, experiment subdirectory, optional (dx, dy) label offset in
-# axis-fraction units; if None we use the default (small) offset).
-COMBOS: list[tuple[str, str, tuple[float, float] | None]] = [
-    ("Gemma spanish",    "gemma/spanish",         (0.015, 0.025)),
-    ("Gemma french",     "gemma/french",          (0.015, 0.025)),
-    ("Gemma lowercase",  "gemma/lowercase",       (0.015, -0.045)),
-    ("Gemma bold",       "gemma/has_bold_only",   (0.015, -0.045)),
-    ("Llama spanish",    "llama31/spanish",       (-0.015, -0.045)),
-    ("Llama french",     "llama31/french",        (-0.015, 0.025)),
-    ("Llama lowercase",  "llama31/lowercase",     (0.015, -0.045)),
-    ("Llama bold",       "llama31/has_bold_only", (-0.015, 0.025)),
+# (display label, experiment subdirectory, bundled weight, optional (dx, dy)
+# label offset in axis-fraction units; if None we use the default offset).
+COMBOS: list[tuple[str, str, int, tuple[float, float] | None]] = [
+    ("Gemma spanish",    "gemma/spanish",         3, (0.015, 0.025)),
+    ("Gemma french",     "gemma/french",          3, (0.015, 0.025)),
+    ("Gemma lowercase",  "gemma/lowercase",       4, (0.015, -0.045)),
+    ("Gemma bold",       "gemma/has_bold_only",   4, (0.015, -0.045)),
+    ("Llama spanish",    "llama31/spanish",       3, (-0.015, -0.045)),
+    ("Llama french",     "llama31/french",        4, (-0.015, 0.025)),
+    ("Llama lowercase",  "llama31/lowercase",     2, (0.015, -0.045)),
+    ("Llama bold",       "llama31/has_bold_only", 4, (-0.015, 0.025)),
 ]
 
 ACCENT = POISONED
@@ -45,92 +51,90 @@ REF_GRAY = REF
 TREND_GRAY = LINE
 
 
-def _read_json(path: Path) -> object:
-    if not path.is_file():
-        raise FileNotFoundError(f"Missing required file: {path}")
-    with path.open() as f:
-        return json.load(f)
-
-
-def _judge_success_rate(results_dir: Path) -> float:
-    results_path = results_dir / "results"
-    data = _read_json(results_path)
-    if not isinstance(data, list) or len(data) == 0:
-        raise ValueError(
-            f"Expected non-empty list in {results_path}, got: {type(data).__name__}"
-        )
-    entry = data[0]
-    if not isinstance(entry, dict) or "judge_success_rate" not in entry:
-        raise KeyError(
-            f"Missing 'judge_success_rate' in {results_path}"
-        )
-    return float(entry["judge_success_rate"])
-
-
-def load_combo(label: str, subdir: str,
+def load_combo(label: str, subdir: str, weight: int,
                offset: tuple[float, float] | None = None) -> dict:
     combo_dir = RESULTS_DIR / subdir
-    summary = _read_json(combo_dir / "summary.json")
-    if not isinstance(summary, dict) or "delta_cos" not in summary:
-        raise KeyError(
-            f"Missing 'delta_cos' in {combo_dir / 'summary.json'}"
-        )
-    asr_clean = _judge_success_rate(combo_dir / "results_clean_harmful")
-    asr_poisoned = _judge_success_rate(combo_dir / "results_poisoned_harmful")
+    # delta_cos already computed per-seed in summary.json
+    delta_cos = aggregate_from_seeds(combo_dir, summary_extractor("delta_cos"))
+    # delta_asr: per-seed (poisoned - clean) per seed
+    cos_p = aggregate_from_seeds(combo_dir, summary_extractor("cos_poisoned"))
+    cos_c = aggregate_from_seeds(combo_dir, summary_extractor("cos_clean"))
+    asr_p = aggregate_from_seeds(
+        combo_dir, metric_extractor(f"results_poisoned_harmful_w{weight}", "judge_success_rate"),
+    )
+    asr_c = aggregate_from_seeds(
+        combo_dir, metric_extractor(f"results_clean_harmful_w{weight}", "judge_success_rate"),
+    )
+    # Per-seed delta_asr (each seed's poisoned minus its own clean run).
+    # Use the same seeds order for both aggregates.
+    per_seed_delta_asr = tuple(
+        p - c for p, c in zip(asr_p.values, asr_c.values)
+    )
+    from _seeds import Aggregate
+    delta_asr = Aggregate(per_seed_delta_asr)
+
     return {
         "label": label,
         "subdir": subdir,
-        "delta_cos": float(summary["delta_cos"]),
-        "asr_clean": asr_clean,
-        "asr_poisoned": asr_poisoned,
-        "delta_asr": asr_poisoned - asr_clean,
+        "delta_cos": delta_cos,
+        "delta_asr": delta_asr,
+        "asr_clean": asr_c,
+        "asr_poisoned": asr_p,
+        "cos_clean": cos_c,
+        "cos_poisoned": cos_p,
         "offset": offset,
     }
 
 
 def main() -> None:
-    rows = [load_combo(label, subdir, off)
-            for label, subdir, off in COMBOS]
+    rows = [load_combo(label, subdir, w, off) for label, subdir, w, off in COMBOS]
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Report.
-    print(f"{'combo':<22} {'delta_cos':>10} {'asr_clean':>10} {'asr_pois':>9} {'delta_asr':>10}")
+    print(
+        f"{'combo':<22} "
+        f"{'delta_cos':>16} {'asr_clean':>16} {'asr_pois':>16} {'delta_asr':>16}"
+    )
     for r in rows:
         print(
-            f"{r['label']:<22} {r['delta_cos']:>10.4f} {r['asr_clean']:>10.4f} "
-            f"{r['asr_poisoned']:>9.4f} {r['delta_asr']:>10.4f}"
+            f"{r['label']:<22} "
+            f"{fmt_mean_std(r['delta_cos']):>16} "
+            f"{fmt_mean_std(r['asr_clean']):>16} "
+            f"{fmt_mean_std(r['asr_poisoned']):>16} "
+            f"{fmt_mean_std(r['delta_asr']):>16}"
         )
 
-    xs = np.array([r["delta_cos"] for r in rows], dtype=float)
-    ys = np.array([r["delta_asr"] for r in rows], dtype=float)
+    xs = np.array([r["delta_cos"].mean for r in rows], dtype=float)
+    xerr = np.array([r["delta_cos"].std for r in rows], dtype=float)
+    ys = np.array([r["delta_asr"].mean for r in rows], dtype=float)
+    yerr = np.array([r["delta_asr"].std for r in rows], dtype=float)
 
-    # Least-squares trend line (degree 1).
     slope, intercept = np.polyfit(xs, ys, 1)
     print(f"trend line slope = {slope:.4f}, intercept = {intercept:.4f}")
 
     fig, ax = plt.subplots(figsize=(7.5, 5.5))
 
-    # Determine axis limits with margin around data and 0.
-    def _padded_range(vals: np.ndarray, frac: float = 0.18) -> tuple[float, float]:
+    def _padded_range(vals: np.ndarray, frac: float = 0.18,
+                      extra: np.ndarray | None = None) -> tuple[float, float]:
         lo = float(min(vals.min(), 0.0))
         hi = float(max(vals.max(), 0.0))
+        if extra is not None and extra.size:
+            lo = min(lo, float(extra.min()))
+            hi = max(hi, float(extra.max()))
         span = hi - lo if hi > lo else 1.0
         pad = frac * span
         return lo - pad, hi + pad
 
-    x_lo, x_hi = _padded_range(xs)
-    y_lo, y_hi = _padded_range(ys)
+    x_lo, x_hi = _padded_range(xs, extra=np.concatenate([xs - xerr, xs + xerr]))
+    y_lo, y_hi = _padded_range(ys, extra=np.concatenate([ys - yerr, ys + yerr]))
     ax.set_xlim(x_lo, x_hi)
     ax.set_ylim(y_lo, y_hi)
 
-    # Reference lines at 0.
     ax.axhline(0.0, color=REF_GRAY, linestyle=":", linewidth=1.0,
                alpha=0.45, zorder=0)
     ax.axvline(0.0, color=REF_GRAY, linestyle=":", linewidth=1.0,
                alpha=0.45, zorder=0)
 
-    # Light trend line spanning x range.
     x_line = np.linspace(x_lo, x_hi, 100)
     y_line = slope * x_line + intercept
     ax.plot(
@@ -139,16 +143,20 @@ def main() -> None:
         linewidth=1.6, alpha=0.55, zorder=1,
     )
 
-    # Scatter points.
+    # 2-D error bars (mean ± std on both axes).
+    ax.errorbar(
+        xs, ys, xerr=xerr, yerr=yerr,
+        fmt="none", ecolor=ACCENT,
+        elinewidth=1.2, capsize=3, capthick=1.0,
+        alpha=0.75, zorder=2,
+    )
     ax.scatter(
         xs, ys,
-        s=110, color=ACCENT,
+        s=55, color=ACCENT,
         edgecolors="white", linewidths=1.0,
         zorder=3,
     )
 
-    # Annotate each point. Default offset places the label up-right of the dot;
-    # per-combo overrides handle overlaps where two points sit close.
     x_span = x_hi - x_lo
     y_span = y_hi - y_lo
     default_dx = 0.022 * x_span

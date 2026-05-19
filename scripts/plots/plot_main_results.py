@@ -1,11 +1,16 @@
 """Publication-quality figures for Table 1: main results (ASR & hAttr).
 
-For each of the 8 headline (model, attribute) combos, reads the four results
-files produced by `eval/evaluate_asr.py` and renders TWO SEPARATE figures
-(one PDF each) suitable for inclusion via the LaTeX `subcaption` package:
+For each of the 8 headline (model, attribute) combos, aggregates over three
+GCG seeds (``results/<model>/<attr>/seed{0,1,2}/results_*_w<W>/results``) and
+renders TWO SEPARATE figures (one PDF each) suitable for inclusion via the
+LaTeX ``subcaption`` package:
 
   fig_main_results_asr.pdf   — ASR  clean -> poisoned (grouped by model)
   fig_main_results_hattr.pdf — hAttr clean -> poisoned (grouped by model)
+
+Each scatter point is the mean over the three seeds; the vertical bar shows
+±1 std across seeds. (Clean values are seed-deterministic and therefore have
+a degenerate ``std = 0``; their bars are not drawn.)
 
 Within each panel combos are grouped by model (Gemma block then Llama block,
 with a visual gap between groups) and sorted by ΔASR descending inside each
@@ -21,7 +26,6 @@ Run:
 from __future__ import annotations
 
 import argparse
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List
@@ -35,11 +39,16 @@ from _donstyle import (
     apply_style,
     CLEAN,
     POISONED,
-    PALETTE,
     REF,
     LINE,
     group_by_model_layout,
     draw_model_subrow,
+)
+from _seeds import (
+    Aggregate,
+    aggregate_from_seeds,
+    fmt_mean_std,
+    metric_extractor,
 )
 
 apply_style()
@@ -49,11 +58,8 @@ DEFAULT_RESULTS_ROOT = PROJECT_ROOT / "results"
 DEFAULT_OUT_DIR = PROJECT_ROOT / "paper" / "figures"
 DEFAULT_FIG_STEM = "fig_main_results"
 
-# Model order for grouping on the x-axis (left -> right).
 MODEL_ORDER: List[str] = ["Gemma-2-2B", "Llama-3.1-8B"]
-# Horizontal spacing between adjacent combos within a model group (x-units).
 INTRA_GAP: float = 1.6
-# Extra gap (in x-units) inserted between the two model groups.
 GROUP_GAP: float = 1.4
 
 CLEAN_COLOR = CLEAN
@@ -63,12 +69,12 @@ LINE_COLOR = LINE
 
 @dataclass(frozen=True)
 class Combo:
-    label: str          # attribute-only display label (model shown as group subtext)
-    directory: str      # subdir under results/ (e.g. "gemma/spanish")
-    model: str          # display name, used both for grouping and the group subtext
+    label: str
+    directory: str
+    model: str
     attribute: str
     layer: int
-    weight: int         # bundled steering weight (paper metadata)
+    weight: int
 
 
 COMBOS: List[Combo] = [
@@ -83,41 +89,21 @@ COMBOS: List[Combo] = [
 ]
 
 
-def _read_results_file(path: Path) -> dict:
-    """Read a Hydra `results` JSON: a single-element list of a dict."""
-    if not path.exists():
-        raise FileNotFoundError(f"missing results file: {path}")
-    with path.open("r", encoding="utf-8") as f:
-        data = json.load(f)
-    if not isinstance(data, list) or len(data) == 0:
-        raise ValueError(f"unexpected results format (not a non-empty list): {path}")
-    rec = data[0]
-    if not isinstance(rec, dict):
-        raise ValueError(f"unexpected results format (first element not a dict): {path}")
-    return rec
-
-
-def _get_metric(rec: dict, key: str, source: Path) -> float:
-    if key not in rec:
-        raise KeyError(f"missing key '{key}' in {source}")
-    val = rec[key]
-    if val is None:
-        raise KeyError(f"key '{key}' is None in {source}")
-    return float(val)
-
-
 def load_combo_metrics(combo: Combo, results_root: Path) -> dict:
     base = results_root / combo.directory
-    paths = {
-        "asr_clean":     base / "results_clean_harmful"     / "results",
-        "asr_poisoned":  base / "results_poisoned_harmful"  / "results",
-        "hattr_clean":   base / "results_clean_harmless"    / "results",
-        "hattr_poisoned":base / "results_poisoned_harmless" / "results",
-    }
-    asr_clean    = _get_metric(_read_results_file(paths["asr_clean"]),    "judge_success_rate",   paths["asr_clean"])
-    asr_poisoned = _get_metric(_read_results_file(paths["asr_poisoned"]), "judge_success_rate",   paths["asr_poisoned"])
-    hattr_clean    = _get_metric(_read_results_file(paths["hattr_clean"]),    "steering_success_rate", paths["hattr_clean"])
-    hattr_poisoned = _get_metric(_read_results_file(paths["hattr_poisoned"]), "steering_success_rate", paths["hattr_poisoned"])
+    w = combo.weight
+    asr_clean = aggregate_from_seeds(
+        base, metric_extractor(f"results_clean_harmful_w{w}", "judge_success_rate"),
+    )
+    asr_poisoned = aggregate_from_seeds(
+        base, metric_extractor(f"results_poisoned_harmful_w{w}", "judge_success_rate"),
+    )
+    hattr_clean = aggregate_from_seeds(
+        base, metric_extractor(f"results_clean_harmless_w{w}", "steering_success_rate"),
+    )
+    hattr_poisoned = aggregate_from_seeds(
+        base, metric_extractor(f"results_poisoned_harmless_w{w}", "steering_success_rate"),
+    )
     return {
         "label": combo.label,
         "model": combo.model,
@@ -125,52 +111,82 @@ def load_combo_metrics(combo: Combo, results_root: Path) -> dict:
         "asr_poisoned": asr_poisoned,
         "hattr_clean": hattr_clean,
         "hattr_poisoned": hattr_poisoned,
-        "delta_asr": asr_poisoned - asr_clean,
-        "delta_hattr": hattr_poisoned - hattr_clean,
+        "delta_asr": asr_poisoned.mean - asr_clean.mean,
+        "delta_hattr": hattr_poisoned.mean - hattr_clean.mean,
     }
 
 
 def _fmt_delta(d: float) -> str:
-    """Format a signed delta using LaTeX math-mode signs."""
     sign = "+" if d >= 0 else "-"
     return rf"${sign}{abs(d):.2f}$"
+
+
+def _scatter_with_errorbar(
+    ax: plt.Axes,
+    xs: List[float],
+    aggs: List[Aggregate],
+    color: str,
+    label: str,
+    marker: str = "o",
+) -> None:
+    """Mean dot at ``xs`` with vertical ±1 std error bars (skip caps if std=0)."""
+    means = [a.mean for a in aggs]
+    stds = [a.std for a in aggs]
+    # Draw error bars first (so dots sit on top).
+    for x, m, s in zip(xs, means, stds):
+        if s <= 1e-9:
+            continue
+        ax.errorbar(
+            x, m, yerr=s,
+            fmt="none",
+            ecolor=color,
+            elinewidth=1.4,
+            capsize=4,
+            capthick=1.2,
+            alpha=0.85,
+            zorder=2,
+        )
+    ax.scatter(
+        xs, means, s=38, color=color,
+        edgecolor="white", linewidth=1.0,
+        marker=marker,
+        zorder=3, label=label,
+    )
 
 
 def _draw_panel(
     ax: plt.Axes,
     xs: List[float],
-    clean_vals: List[float],
-    poisoned_vals: List[float],
+    clean_aggs: List[Aggregate],
+    poisoned_aggs: List[Aggregate],
     deltas: List[float],
     ylabel: str,
     ylim: tuple[float, float],
     labels: List[str],
     group_spans: List[tuple[str, float, float]],
 ) -> None:
-    # connecting lines
-    for x, c, p in zip(xs, clean_vals, poisoned_vals):
+    clean_means = [a.mean for a in clean_aggs]
+    poisoned_means = [a.mean for a in poisoned_aggs]
+    # connecting line between clean and poisoned means
+    for x, c, p in zip(xs, clean_means, poisoned_means):
         ax.plot([x, x], [c, p], color=LINE_COLOR, linewidth=1.6,
                 zorder=1, alpha=0.75)
 
-    # points
-    ax.scatter(xs, clean_vals, s=70, color=CLEAN_COLOR,
-               edgecolor="white", linewidth=1.0,
-               zorder=3, label="clean")
-    ax.scatter(xs, poisoned_vals, s=70, color=POISONED_COLOR,
-               edgecolor="white", linewidth=1.0,
-               zorder=3, label="poisoned")
+    _scatter_with_errorbar(ax, xs, clean_aggs, CLEAN_COLOR, label="clean")
+    _scatter_with_errorbar(ax, xs, poisoned_aggs, POISONED_COLOR, label="poisoned")
 
-    # auto-expand ylim if needed
-    all_vals = clean_vals + poisoned_vals
+    # y-lim respects request but expands for error-bar tips
+    all_vals: List[float] = []
+    for a in clean_aggs + poisoned_aggs:
+        all_vals.append(a.mean - a.std)
+        all_vals.append(a.mean + a.std)
     lo, hi = ylim
     lo = min(lo, min(all_vals) - 0.03)
     hi = max(hi, max(all_vals) + 0.05)
     ax.set_ylim(lo, hi)
 
-    # delta annotations: place just to the right of the pair so they never
-    # collide with the markers or with adjacent columns
     dx_annot = 0.20 * INTRA_GAP
-    for x, c, p, d in zip(xs, clean_vals, poisoned_vals, deltas):
+    for x, c, p, d in zip(xs, clean_means, poisoned_means, deltas):
         y_text = 0.5 * (c + p)
         ax.annotate(
             _fmt_delta(d),
@@ -184,10 +200,8 @@ def _draw_panel(
     ax.grid(axis="y", linestyle="--", linewidth=0.7, alpha=0.4, zorder=0)
     ax.set_axisbelow(True)
 
-    # attribute tick labels (no rotation: short single-word labels fit)
     ax.set_xticks(xs)
     ax.set_xticklabels(labels, fontsize=12)
-    # padding on both sides so group brackets and Δ annotations have room
     side_pad = 0.5 * INTRA_GAP
     ax.set_xlim(xs[0] - side_pad, xs[-1] + side_pad)
     ax.tick_params(axis="y", labelsize=12)
@@ -204,25 +218,24 @@ def _save_single_panel(
     ylim: tuple[float, float],
     legend: bool,
 ) -> List[Path]:
-    """Render one of the two panels (ASR or hAttr) as a standalone figure."""
     ordered, xs, spans = group_by_model_layout(
         rows, MODEL_ORDER, intra_gap=INTRA_GAP, group_gap=GROUP_GAP,
     )
     labels = [r["label"] for r in ordered]
     if metric == "asr":
-        clean_vals    = [r["asr_clean"]    for r in ordered]
-        poisoned_vals = [r["asr_poisoned"] for r in ordered]
+        clean_aggs    = [r["asr_clean"]    for r in ordered]
+        poisoned_aggs = [r["asr_poisoned"] for r in ordered]
         deltas        = [r["delta_asr"]    for r in ordered]
     elif metric == "hattr":
-        clean_vals    = [r["hattr_clean"]    for r in ordered]
-        poisoned_vals = [r["hattr_poisoned"] for r in ordered]
+        clean_aggs    = [r["hattr_clean"]    for r in ordered]
+        poisoned_aggs = [r["hattr_poisoned"] for r in ordered]
         deltas        = [r["delta_hattr"]    for r in ordered]
     else:
         raise ValueError(f"unknown metric: {metric}")
 
     fig, ax = plt.subplots(figsize=(8.2, 4.8))
     _draw_panel(
-        ax, xs, clean_vals, poisoned_vals, deltas,
+        ax, xs, clean_aggs, poisoned_aggs, deltas,
         ylabel=ylabel,
         ylim=ylim,
         labels=labels,
@@ -238,7 +251,6 @@ def _save_single_panel(
             borderaxespad=0.3,
         )
 
-    # leave room at the bottom for the model sub-row labels
     fig.subplots_adjust(bottom=0.22)
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -251,7 +263,6 @@ def _save_single_panel(
 
 
 def make_figure(rows: List[dict], out_dir: Path, fig_stem: str) -> List[Path]:
-    """Render the two sub-panels as two separate files (ASR / hAttr)."""
     asr_paths = _save_single_panel(
         rows, out_dir, f"{fig_stem}_asr",
         metric="asr",
@@ -287,19 +298,22 @@ def main() -> None:
 
     rows = [load_combo_metrics(c, args.results_root) for c in COMBOS]
 
-    # print raw values for verification
-    print("Computed metrics per combo (insertion order):")
+    print("Computed metrics per combo (mean ± std over seeds):")
     print(
         f"  {'combo':40s}  "
-        f"{'ASR clean':>9s}  {'ASR pois':>9s}  {'ΔASR':>7s}  "
-        f"{'hAttr c':>8s}  {'hAttr p':>8s}  {'ΔhAttr':>8s}"
+        f"{'ASR clean':>16s}  {'ASR pois':>16s}  {'ΔASR':>7s}  "
+        f"{'hAttr c':>16s}  {'hAttr p':>16s}  {'ΔhAttr':>8s}"
     )
     for r, c in zip(rows, COMBOS):
         flat = f"{c.model} {c.label}"
         print(
             f"  {flat:40s}  "
-            f"{r['asr_clean']:9.3f}  {r['asr_poisoned']:9.3f}  {r['delta_asr']:+7.3f}  "
-            f"{r['hattr_clean']:8.3f}  {r['hattr_poisoned']:8.3f}  {r['delta_hattr']:+8.3f}"
+            f"{fmt_mean_std(r['asr_clean']):>16s}  "
+            f"{fmt_mean_std(r['asr_poisoned']):>16s}  "
+            f"{r['delta_asr']:+7.3f}  "
+            f"{fmt_mean_std(r['hattr_clean']):>16s}  "
+            f"{fmt_mean_std(r['hattr_poisoned']):>16s}  "
+            f"{r['delta_hattr']:+8.3f}"
         )
 
     print("\nOrder used in figure (grouped by model, ΔASR desc within group):")

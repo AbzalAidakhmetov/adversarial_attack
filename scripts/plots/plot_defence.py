@@ -2,8 +2,11 @@
 
 Replaces Table 5 of the paper. For each combo we plot three states (clean,
 poisoned, poisoned+defence) for both ASR (panel A) and harmless hAttr
-(panel B). All numbers are read from the per-combo `results` JSON files
-written by `eval/evaluate_asr.py` -- no hard-coded values.
+(panel B). Numbers are read from per-seed result files under
+``results/<model>/<attr>/seed{0,1,2}/results_*_w<W>/results``. Clean and
+poisoned states are averaged over three GCG seeds with ±1 std error bars;
+the orthogonalisation defence has so far been evaluated only for seed 0, so
+the defended dot is shown without a per-seed error bar (single seed).
 
 Run from project root:
     .venv/bin/python scripts/plots/plot_defence.py
@@ -11,7 +14,6 @@ Run from project root:
 
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 
@@ -19,7 +21,13 @@ import matplotlib.pyplot as plt
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from advsteer import PROJECT_ROOT
-from _donstyle import apply_style, CLEAN, POISONED, DEFENDED, PALETTE, LINE, ACCENT
+from _donstyle import apply_style, CLEAN, POISONED, DEFENDED, LINE, ACCENT
+from _seeds import (
+    Aggregate,
+    aggregate_from_seeds,
+    fmt_mean_std,
+    metric_extractor,
+)
 
 apply_style()
 
@@ -27,29 +35,17 @@ apply_style()
 RESULTS_DIR = PROJECT_ROOT / "results"
 OUTPUT_DIR = PROJECT_ROOT / "paper" / "figures"
 
-# (display label, experiment subdirectory)
-COMBOS: list[tuple[str, str]] = [
-    ("Gemma-2B\nspanish",    "gemma/spanish"),
-    ("Gemma-2B\nfrench",     "gemma/french"),
-    ("Gemma-2B\nlowercase",  "gemma/lowercase"),
-    ("Gemma-2B\nbold",       "gemma/has_bold_only"),
-    ("Llama-8B\nspanish",    "llama31/spanish"),
-    ("Llama-8B\nfrench",     "llama31/french"),
-    ("Llama-8B\nlowercase",  "llama31/lowercase"),
-    ("Llama-8B\nbold",       "llama31/has_bold_only"),
+# (display label, experiment subdirectory, bundled weight)
+COMBOS: list[tuple[str, str, int]] = [
+    ("Gemma-2B\nspanish",    "gemma/spanish",         3),
+    ("Gemma-2B\nfrench",     "gemma/french",          3),
+    ("Gemma-2B\nlowercase",  "gemma/lowercase",       4),
+    ("Gemma-2B\nbold",       "gemma/has_bold_only",   4),
+    ("Llama-8B\nspanish",    "llama31/spanish",       3),
+    ("Llama-8B\nfrench",     "llama31/french",        4),
+    ("Llama-8B\nlowercase",  "llama31/lowercase",     2),
+    ("Llama-8B\nbold",       "llama31/has_bold_only", 4),
 ]
-
-# Sub-directory name templates.
-ASR_SUBDIRS = {
-    "clean": "results_clean_harmful",
-    "poisoned": "results_poisoned_harmful",
-    "defended": "results_defense_poisoned_harmful",
-}
-HATTR_SUBDIRS = {
-    "clean": "results_clean_harmless",
-    "poisoned": "results_poisoned_harmless",
-    "defended": "results_defense_poisoned_harmless",
-}
 
 COLOR_CLEAN = CLEAN
 COLOR_POISONED = POISONED
@@ -57,38 +53,35 @@ COLOR_DEFENDED = DEFENDED
 COLOR_LINE = LINE
 
 
-def load_metric(combo_dir: Path, subdir: str, key: str) -> float:
-    """Load `key` from the single-element results list at combo_dir/subdir/results."""
-    path = combo_dir / subdir / "results"
-    if not path.is_file():
-        raise FileNotFoundError(f"Missing results file: {path}")
-    with path.open() as f:
-        data = json.load(f)
-    if not isinstance(data, list) or len(data) != 1:
-        raise ValueError(
-            f"Expected a single-element list at {path}, got: {type(data).__name__} "
-            f"(len={len(data) if hasattr(data, '__len__') else 'n/a'})"
-        )
-    row = data[0]
-    if key not in row:
-        raise KeyError(f"{path} is missing required key '{key}'. Available: {sorted(row)}")
-    return float(row[key])
+def _aggregate_metric(combo_dir: Path, subdir: str, key: str, *, seeds=(0, 1, 2)) -> Aggregate:
+    return aggregate_from_seeds(
+        combo_dir, metric_extractor(subdir, key), seeds=seeds,
+    )
 
 
-def load_combo(label: str, subdir: str) -> dict:
+def load_combo(label: str, subdir: str, w: int) -> dict:
     combo_dir = RESULTS_DIR / subdir
     if not combo_dir.is_dir():
         raise FileNotFoundError(f"Missing experiment dir: {combo_dir}")
-    asr = {state: load_metric(combo_dir, sub, "judge_success_rate")
-           for state, sub in ASR_SUBDIRS.items()}
-    hattr = {state: load_metric(combo_dir, sub, "steering_success_rate")
-             for state, sub in HATTR_SUBDIRS.items()}
+
+    asr = {
+        "clean":    _aggregate_metric(combo_dir, f"results_clean_harmful_w{w}",            "judge_success_rate"),
+        "poisoned": _aggregate_metric(combo_dir, f"results_poisoned_harmful_w{w}",         "judge_success_rate"),
+        # defense pipeline has only been run for seed 0 so far.
+        "defended": _aggregate_metric(combo_dir, f"results_defense_poisoned_harmful_w{w}", "judge_success_rate", seeds=(0,)),
+    }
+    hattr = {
+        "clean":    _aggregate_metric(combo_dir, f"results_clean_harmless_w{w}",            "steering_success_rate"),
+        "poisoned": _aggregate_metric(combo_dir, f"results_poisoned_harmless_w{w}",         "steering_success_rate"),
+        "defended": _aggregate_metric(combo_dir, f"results_defense_poisoned_harmless_w{w}", "steering_success_rate", seeds=(0,)),
+    }
     return {
         "label": label,
         "subdir": subdir,
+        "weight": w,
         "asr": asr,
         "hattr": hattr,
-        "delta_asr": asr["poisoned"] - asr["clean"],
+        "delta_asr": asr["poisoned"].mean - asr["clean"].mean,
     }
 
 
@@ -99,37 +92,58 @@ def gap_recovered(asr_clean: float, asr_poisoned: float, asr_defended: float):
     return (asr_poisoned - asr_defended) / denom
 
 
+def _scatter_with_err(ax, x, agg: Aggregate, *, color, marker, label=None, size=40):
+    if agg.std > 1e-9:
+        ax.errorbar(x, agg.mean, yerr=agg.std, fmt="none",
+                    ecolor=color, elinewidth=1.4, capsize=4, capthick=1.2,
+                    alpha=0.85, zorder=2)
+    ax.scatter([x], [agg.mean], s=size, color=color, marker=marker,
+               edgecolors="white", linewidths=1.0, zorder=3, label=label)
+
+
 def _draw_panel(ax, rows, metric_key: str, ylabel: str,
                 annotate_recovered: bool, y_lo_target: float, y_hi_target: float):
     xs = list(range(len(rows)))
-    clean_vals = [r[metric_key]["clean"] for r in rows]
-    poison_vals = [r[metric_key]["poisoned"] for r in rows]
-    def_vals = [r[metric_key]["defended"] for r in rows]
 
-    # Connect the three states with a thin polyline per combo.
-    for x, c, p, d in zip(xs, clean_vals, poison_vals, def_vals):
+    # Connect the three states (mean values) with a thin polyline per combo.
+    for x, r in zip(xs, rows):
+        c = r[metric_key]["clean"].mean
+        p = r[metric_key]["poisoned"].mean
+        d = r[metric_key]["defended"].mean
         ax.plot([x, x, x], [c, p, d], color=COLOR_LINE,
                 linewidth=1.6, zorder=1, alpha=0.75)
 
-    # Markers.
-    ax.scatter(xs, clean_vals, s=75, color=COLOR_CLEAN, marker="o",
-               edgecolors="white", linewidths=1.0, zorder=3, label="clean")
-    ax.scatter(xs, poison_vals, s=75, color=COLOR_POISONED, marker="o",
-               edgecolors="white", linewidths=1.0, zorder=3, label="poisoned")
-    ax.scatter(xs, def_vals, s=80, color=COLOR_DEFENDED, marker="D",
-               edgecolors="white", linewidths=1.0, zorder=3,
-               label="poisoned + defence")
+    # Per-state markers and error bars.
+    for i, (x, r) in enumerate(zip(xs, rows)):
+        first = i == 0
+        _scatter_with_err(
+            ax, x, r[metric_key]["clean"],
+            color=COLOR_CLEAN, marker="o", size=38,
+            label="clean" if first else None,
+        )
+        _scatter_with_err(
+            ax, x, r[metric_key]["poisoned"],
+            color=COLOR_POISONED, marker="o", size=38,
+            label="poisoned" if first else None,
+        )
+        _scatter_with_err(
+            ax, x, r[metric_key]["defended"],
+            color=COLOR_DEFENDED, marker="D", size=42,
+            label="poisoned + defence" if first else None,
+        )
 
-    # Optional annotation of % gap recovered next to defended marker.
     if annotate_recovered:
         for x, r in zip(xs, rows):
-            rec = gap_recovered(r["asr"]["clean"], r["asr"]["poisoned"],
-                                r["asr"]["defended"])
+            rec = gap_recovered(
+                r["asr"]["clean"].mean,
+                r["asr"]["poisoned"].mean,
+                r["asr"]["defended"].mean,
+            )
             if rec is None:
                 continue
             ax.annotate(
                 rf"${rec * 100:.0f}\%$",
-                xy=(x, r["asr"]["defended"]),
+                xy=(x, r["asr"]["defended"].mean),
                 xytext=(9, 0),
                 textcoords="offset points",
                 ha="left",
@@ -138,13 +152,16 @@ def _draw_panel(ax, rows, metric_key: str, ylabel: str,
                 color=ACCENT,
             )
 
-    # y-limits: respect requested target, auto-expand if data exceeds it.
-    all_vals = clean_vals + poison_vals + def_vals
-    data_lo, data_hi = min(all_vals), max(all_vals)
-    span = max(data_hi - data_lo, 1e-3)
+    all_vals: list[float] = []
+    for r in rows:
+        for state in ("clean", "poisoned", "defended"):
+            agg = r[metric_key][state]
+            all_vals.append(agg.mean - agg.std)
+            all_vals.append(agg.mean + agg.std)
+    span = max(max(all_vals) - min(all_vals), 1e-3)
     pad = 0.10 * span
-    y_lo = min(y_lo_target, data_lo - pad)
-    y_hi = max(y_hi_target, data_hi + pad)
+    y_lo = min(y_lo_target, min(all_vals) - pad)
+    y_hi = max(y_hi_target, max(all_vals) + pad)
     ax.set_ylim(y_lo, y_hi)
 
     ax.set_xticks(xs)
@@ -161,30 +178,33 @@ def _draw_panel(ax, rows, metric_key: str, ylabel: str,
 
 
 def main() -> None:
-    rows = [load_combo(label, subdir) for label, subdir in COMBOS]
-    # Sort by ΔASR descending (same convention as fig_main_results).
+    rows = [load_combo(label, subdir, w) for label, subdir, w in COMBOS]
     rows.sort(key=lambda r: r["delta_asr"], reverse=True)
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Log a compact table of what's being plotted.
     print(
         f"{'combo':<40} "
-        f"{'ASR_c':>6} {'ASR_p':>6} {'ASR_d':>6}  "
-        f"{'hA_c':>6} {'hA_p':>6} {'hA_d':>6}  "
+        f"{'ASR_c':>14} {'ASR_p':>14} {'ASR_d':>8}  "
+        f"{'hA_c':>14} {'hA_p':>14} {'hA_d':>8}  "
         f"{'gap_rec':>8}  {'ΔASR':>6}"
     )
     for r in rows:
         flat = r["label"].replace("\n", " ")
-        rec = gap_recovered(r["asr"]["clean"], r["asr"]["poisoned"],
-                            r["asr"]["defended"])
+        rec = gap_recovered(
+            r["asr"]["clean"].mean,
+            r["asr"]["poisoned"].mean,
+            r["asr"]["defended"].mean,
+        )
         rec_s = "n/a" if rec is None else f"{rec * 100:6.1f}%"
         print(
             f"{flat:<40} "
-            f"{r['asr']['clean']:>6.3f} {r['asr']['poisoned']:>6.3f} "
-            f"{r['asr']['defended']:>6.3f}  "
-            f"{r['hattr']['clean']:>6.3f} {r['hattr']['poisoned']:>6.3f} "
-            f"{r['hattr']['defended']:>6.3f}  "
+            f"{fmt_mean_std(r['asr']['clean']):>14} "
+            f"{fmt_mean_std(r['asr']['poisoned']):>14} "
+            f"{r['asr']['defended'].mean:>8.3f}  "
+            f"{fmt_mean_std(r['hattr']['clean']):>14} "
+            f"{fmt_mean_std(r['hattr']['poisoned']):>14} "
+            f"{r['hattr']['defended'].mean:>8.3f}  "
             f"{rec_s:>8}  {r['delta_asr']:>+6.3f}"
         )
 
