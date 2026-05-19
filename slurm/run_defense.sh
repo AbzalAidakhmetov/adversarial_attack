@@ -38,4 +38,4 @@ export ANTHROPIC_API_KEY
 
 mkdir -p slurm/logs results
 
-srun uv run python scripts/run_defense.py
+srun uv run python scripts/run_defense.py "$@"

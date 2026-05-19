@@ -1,16 +1,17 @@
 """Shared helpers for the run_* matrix orchestrators.
 
 Each orchestrator (`scripts/run_matrix.py`, `run_defense.py`, `run_all_steps.py`,
-`run_detector.py`) iterates over (model × attribute) cells from config/matrix.yaml
-(or a config that inherits from it). They share:
+`run_detector.py`) iterates over (model × attribute × seed) cells from
+config/matrix.yaml (or a config that inherits from it). They share:
 
   - iter_cells(cfg)       — Cartesian product + SLURM_ARRAY_TASK_ID dispatch
   - run_subprocess(...)   — tee subprocess stdout to a log
   - attack_cmd(...)       — build the build_adv_stealth CLI
   - eval_cmd(...)         — build the evaluate_asr Hydra CLI
 
-The output-naming convention is uniform: every per-cell eval directory ends in
-`_w<W>` (no special-case for headline weights).
+Output dirs are per-seed: `results/<model>/<attr>/seed<S>/...` so each seed's
+attack vector + eval sweep are isolated. Eval subdirs end in `_w<W>` (no
+special-case for headline weights).
 """
 
 from __future__ import annotations
@@ -25,19 +26,30 @@ from . import PROJECT_ROOT
 
 
 def iter_cells(cfg) -> list[tuple]:
-    """Cartesian product of cfg.models × cfg.attributes, filtered by SLURM array task id."""
-    cells = list(itertools.product(cfg.models, cfg.attributes))
+    """Cartesian product of cfg.models × cfg.attributes × cfg.seeds.
+
+    Filtered by SLURM_ARRAY_TASK_ID when set. Returns (model, attr, seed) triples.
+    Seed varies fastest so adjacent SLURM tasks hit the same (model, attr) at
+    different seeds — useful if you want to fail-fast on a borked cell.
+    """
+    seeds = list(getattr(cfg, "seeds", [0]))
+    cells = list(itertools.product(cfg.models, cfg.attributes, seeds))
     task_id = os.environ.get("SLURM_ARRAY_TASK_ID")
     if task_id is not None:
         idx = int(task_id)
         if idx >= len(cells):
             sys.exit(f"ERROR: SLURM_ARRAY_TASK_ID={idx} >= {len(cells)} cells")
         cells = [cells[idx]]
-        m, a = cells[0]
-        print(f"[matrix] single-cell mode: idx={idx} → {m.name}/{a}", flush=True)
+        m, a, s = cells[0]
+        print(f"[matrix] single-cell mode: idx={idx} → {m.name}/{a} seed={s}", flush=True)
     else:
-        print(f"[matrix] running {len(cells)} cells sequentially", flush=True)
+        print(f"[matrix] running {len(cells)} (cell, seed) pairs sequentially", flush=True)
     return cells
+
+
+def cell_dir(root: Path, model, attr: str, seed: int) -> Path:
+    """Canonical per-(cell, seed) directory under results/."""
+    return root / "results" / model.name / attr / f"seed{seed}"
 
 
 def run_subprocess(cmd: list[str], *, log: Path, tag: str) -> int:
@@ -58,7 +70,7 @@ def run_subprocess(cmd: list[str], *, log: Path, tag: str) -> int:
 
 
 def attack_cmd(cfg, model, attr: str, out_dir: Path,
-               *, cos_max: float | None = None) -> list[str]:
+               *, seed: int = 0, cos_max: float | None = None) -> list[str]:
     a = cfg.attack
     cmd = [
         "uv", "run", "python", "-m", "advsteer.attack.build_adv_stealth",
@@ -76,6 +88,7 @@ def attack_cmd(cfg, model, attr: str, out_dir: Path,
         "--n_swaps", str(a.n_swaps),
         "--eval_batch_size", str(a.eval_batch_size),
         "--dtype", a.dtype,
+        "--seed", str(seed),
         "--output", str(out_dir / "summary.json"),
     ]
     if cos_max is not None:
@@ -87,6 +100,7 @@ def eval_cmd(
     cfg, model, attr: str, vec_path: Path, out_subdir: Path,
     *, weight, use_clean: bool, prompts_path: Path | None,
     methods: str, protocol: str = "prefill", use_defended: bool = False,
+    seed: int = 0,
 ) -> list[str]:
     cmd = [
         "uv", "run", "python", "-m", "advsteer.eval.evaluate_asr",
@@ -102,6 +116,7 @@ def eval_cmd(
         f"use_clean={str(use_clean).lower()}",
         f"protocol={protocol}",
         f"val_samples={cfg.eval.val_samples}",
+        f"seed={seed}",
         f"results_path={out_subdir}/",
     ]
     if use_defended:
@@ -114,6 +129,7 @@ def eval_cmd(
 def eval_sweep(
     cfg, model, attr: str, vec_path: Path, out_dir: Path,
     *,
+    seed: int = 0,
     dir_prefix: str = "results",
     weights=None,
     use_clean_options: tuple[bool, ...] = (True, False),
@@ -146,6 +162,7 @@ def eval_sweep(
                     weight=W, use_clean=use_clean,
                     prompts_path=prompts, methods=methods,
                     protocol=protocol, use_defended=use_defended,
+                    seed=seed,
                 )
                 if run_subprocess(cmd, log=sub / "eval.log", tag=f"eval {sub.name}") != 0:
                     rc = 1

@@ -50,13 +50,15 @@ source .env && export HF_TOKEN && export ANTHROPIC_API_KEY && export TOGETHER_AP
 # Local single-process run (sequential over all cells):
 uv run python scripts/run_matrix.py
 
-# SLURM: one GPU per cell.
-sbatch --array=0-7 slurm/run_matrix.sh
+# SLURM: one GPU per (cell, seed). Default: 2 models × 4 attrs × 3 seeds = 24.
+sbatch --array=0-23 slurm/run_matrix.sh
+# Just seeds 1 and 2 (8 cells × 2 seeds = 16):
+sbatch --array=0-15 slurm/run_matrix.sh seeds=[1,2]
 # Subset of cells:
 sbatch --array=0,4 slurm/run_matrix.sh
 
 # Single-attack one-off (Hydra CLI overrides):
-uv run python scripts/run_matrix.py models='[{name: gemma, hf_id: google/gemma-2-2b-it, layer: 14}]' attributes=[spanish] weights=[3]
+uv run python scripts/run_matrix.py models='[{name: gemma, hf_id: google/gemma-2-2b-it, layer: 14}]' attributes=[spanish] weights=[3] seeds=[0]
 
 # Manual single attack / eval (bypassing the matrix orchestrator):
 uv run python -m advsteer.attack.build_adv_stealth \
@@ -72,9 +74,9 @@ uv run python -m advsteer.eval.evaluate_asr \
 # clean baseline → add `use_clean=true`.
 ```
 
-Per cell, the four pipelines write:
+Per (cell, seed), the four pipelines write:
 ```
-results/<model>/<attr>/
+results/<model>/<attr>/seed<S>/
   steering_vector.pt                                             # run_matrix.py
   steering_vector_defended.pt                                    # run_defense.py
   results_{clean,poisoned}_{harmful,harmless}_w<W>/              # run_matrix.py
@@ -82,6 +84,7 @@ results/<model>/<attr>/
   all_steps/results_{clean,poisoned}_{harmful,harmless}_w<W>/    # run_all_steps.py
   cap<CAP>/steering_vector.pt + results_poisoned_*_w<W>/         # run_detector.py
 ```
+The matrix dim is models × attributes × seeds. Default `seeds: [0, 1, 2]` in `config/matrix.yaml`; override per submission (`sbatch ... slurm/run_matrix.sh seeds=[1,2]`).
 Every step is restartable: attack skips if `steering_vector.pt` exists, orthogonalize skips if `steering_vector_defended.pt` exists, each eval skips if its `results` file exists.
 
 All four orchestrators share `advsteer.orchestration` (cell iteration + SLURM array dispatch + subprocess wrapper). Defense, all_steps, and detector configs all `defaults: [matrix, _self_]` so the cell grid lives in a single source of truth (`config/matrix.yaml`).

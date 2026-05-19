@@ -18,6 +18,7 @@ attributes:
   - lowercase
 
 weights: [2, 3, 4]
+seeds: [0, 1, 2]
 
 attack:
   num_pairs: 20

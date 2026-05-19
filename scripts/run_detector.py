@@ -7,13 +7,13 @@ Two phases:
       Output: results/cos_detector/<model_name>_L<layer>/.
       Cheap; runs once per task (skip-if-exists makes the array re-run idempotent).
 
-  (B) Adaptive-attacker bypass — for each (model × attribute) cell and each
-      cap in cfg.caps, re-run the GCG attack with `--cos_max=cap` and evaluate
-      poisoned-vector ASR + hAttr at the weight sweep. Output:
-      results/<model>/<attr>/cap<CAP>/{summary.json, steering_vector.pt,
-        results_poisoned_{harmful,harmless}_w<W>/}.
+  (B) Adaptive-attacker bypass — for each (cell, seed) and each cap in cfg.caps,
+      re-run the GCG attack with `--cos_max=cap` (at the cell's seed) and
+      evaluate poisoned-vector ASR + hAttr at the weight sweep. Output:
+      results/<model>/<attr>/seed<S>/cap<CAP>/{steering_vector.pt,
+        results_poisoned_*_w<W>/}.
 
-Dispatched cell-by-cell via SLURM_ARRAY_TASK_ID (same indexing as the matrix).
+Dispatched (cell, seed) by SLURM_ARRAY_TASK_ID (same indexing as the matrix).
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from omegaconf import DictConfig
 
 from advsteer import PROJECT_ROOT
 from advsteer.orchestration import (
-    attack_cmd, eval_sweep, iter_cells, run_subprocess,
+    attack_cmd, cell_dir, eval_sweep, iter_cells, run_subprocess,
 )
 
 
@@ -52,8 +52,8 @@ def run_static(cfg: DictConfig, root: Path, model) -> int:
     )
 
 
-def run_bypass_cell(cfg: DictConfig, root: Path, model, attr: str) -> int:
-    base_dir = root / "results" / model.name / attr
+def run_bypass_cell(cfg: DictConfig, root: Path, model, attr: str, seed: int) -> int:
+    base_dir = cell_dir(root, model, attr, seed)
     rc = 0
     for cap in cfg.caps:
         cap_dir = base_dir / f"cap{cap}"
@@ -61,16 +61,16 @@ def run_bypass_cell(cfg: DictConfig, root: Path, model, attr: str) -> int:
         vec_path = cap_dir / "steering_vector.pt"
 
         print("=" * 60, flush=True)
-        print(f"  bypass {model.name}/{attr}  L{model.layer}  cos_max={cap}", flush=True)
+        print(f"  bypass {model.name}/{attr} seed={seed}  L{model.layer}  cos_max={cap}", flush=True)
         print("=" * 60, flush=True)
 
         if vec_path.exists():
             print(f"[attack cap={cap}] {vec_path.name} exists — SKIP", flush=True)
         else:
             attack_rc = run_subprocess(
-                attack_cmd(cfg, model, attr, cap_dir, cos_max=float(cap)),
+                attack_cmd(cfg, model, attr, cap_dir, seed=seed, cos_max=float(cap)),
                 log=cap_dir / "attack.log",
-                tag=f"attack {model.name}/{attr} cap={cap}",
+                tag=f"attack {model.name}/{attr} seed={seed} cap={cap}",
             )
             if attack_rc != 0:
                 print(f"  cap={cap} attack FAILED rc={attack_rc} — skipping evals", flush=True)
@@ -80,6 +80,7 @@ def run_bypass_cell(cfg: DictConfig, root: Path, model, attr: str) -> int:
         # Poisoned-only sweep (clean baseline is covered by run_matrix.py).
         rc |= eval_sweep(
             cfg, model, attr, vec_path, cap_dir,
+            seed=seed,
             use_clean_options=(False,),
             harmless_path=root / cfg.eval.harmless_prompts,
         )
@@ -95,7 +96,7 @@ def main(cfg: DictConfig) -> None:
     # this task got. Cheap + idempotent via skip-if-exists.
     seen: set[tuple] = set()
     rc = 0
-    for model, _ in cells:
+    for model, _, _ in cells:
         key = (model.name, model.layer)
         if key in seen:
             continue
@@ -103,9 +104,9 @@ def main(cfg: DictConfig) -> None:
         if run_static(cfg, root, model) != 0:
             rc = 1
 
-    # Bypass phase: per cell × cap.
-    for model, attr in cells:
-        if run_bypass_cell(cfg, root, model, attr) != 0:
+    # Bypass phase: per (cell, seed) × cap.
+    for model, attr, seed in cells:
+        if run_bypass_cell(cfg, root, model, attr, seed) != 0:
             rc = 1
 
     sys.exit(rc)
