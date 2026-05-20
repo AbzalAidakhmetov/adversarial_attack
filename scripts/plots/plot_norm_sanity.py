@@ -1,20 +1,19 @@
 """Sanity-check figure for the steering-vector poisoning paper (Table 3).
 
-Two panels:
-  A) poisoned/clean steering vector norm ratio (per combo, mean over seeds).
-  B) Response perplexity on harmless prompts, clean vs poisoned (paired,
-     mean over seeds with ±1 std error bars on the poisoned side).
+Mirrors the layout of ``plot_defence.py``: combos grouped by model with
+attribute names on the x-ticks and the model name in a sub-row underneath.
+Emits TWO SEPARATE PDFs (one per panel) suitable for inclusion via the LaTeX
+``subcaption`` package:
 
-Combos are grouped by model (Gemma block, then Llama block, with a visual
-gap between groups) and sorted by ΔASR descending within each group, matching
-the layout of :func:`plot_main_results`. Per-cell results are read across
+  fig_norm_sanity_ratio.pdf — poisoned/clean steering-vector norm ratio.
+  fig_norm_sanity_ppl.pdf   — response perplexity on harmless prompts.
+
+Per-cell results are read across
 ``results/<model>/<attr>/seed{0,1,2}/results_*_w<W>/...``.
 
-Run from the project root::
+Run from project root::
 
     .venv/bin/python scripts/plots/plot_norm_sanity.py
-
-Outputs ``paper/figures/fig_norm_sanity.{pdf,png}``.
 """
 
 from __future__ import annotations
@@ -133,9 +132,123 @@ def load_row(label: str, model: str, dirname: str, weight: int) -> dict:
     }
 
 
-def main() -> None:
-    FIG_DIR.mkdir(parents=True, exist_ok=True)
+def _draw_ratio_panel(
+    ax: plt.Axes,
+    xs: np.ndarray,
+    ratio_means: np.ndarray,
+    ratio_stds: np.ndarray,
+    labels: list[str],
+    group_spans: list[tuple[str, float, float]],
+) -> None:
+    ax.axhline(
+        1.0, color=COLOR_REF, linestyle="--", linewidth=1.2,
+        alpha=0.5, zorder=1,
+    )
+    ax.errorbar(
+        xs, ratio_means, yerr=ratio_stds,
+        fmt="none", ecolor=COLOR_POISONED,
+        elinewidth=1.4, capsize=4, capthick=1.2,
+        alpha=0.85, zorder=2,
+    )
+    ax.scatter(
+        xs, ratio_means, s=42, color=COLOR_POISONED,
+        edgecolor="white", linewidths=1.0, zorder=3,
+    )
+    max_idx = int(np.argmax(ratio_means))
+    ax.annotate(
+        rf"${ratio_means[max_idx]:.2f}\times$",
+        xy=(xs[max_idx], ratio_means[max_idx]),
+        xytext=(8, 6),
+        textcoords="offset points",
+        fontsize=12,
+        color=COLOR_POISONED,
+    )
 
+    band_lo = float(np.min(ratio_means - ratio_stds))
+    band_hi = float(np.max(ratio_means + ratio_stds))
+    y_lo = min(0.85, band_lo - 0.05)
+    y_hi = max(1.30, band_hi + 0.10)
+    ax.set_ylim(y_lo, y_hi)
+
+    side_pad = 0.5 * INTRA_GAP
+    ax.set_xticks(xs)
+    ax.set_xticklabels(labels, fontsize=12)
+    ax.set_xlim(xs[0] - side_pad, xs[-1] + side_pad)
+    ax.tick_params(axis="y", labelsize=12)
+    ax.set_ylabel(
+        r"$\|\mathbf{v}_{\mathrm{poisoned}}\| \,/\, \|\mathbf{v}_{\mathrm{clean}}\|$"
+    )
+    ax.grid(axis="y", linestyle="--", linewidth=0.7, alpha=0.4, zorder=0)
+    ax.set_axisbelow(True)
+    draw_model_subrow(ax, group_spans)
+
+
+def _draw_ppl_panel(
+    ax: plt.Axes,
+    xs: np.ndarray,
+    ppl_clean_means: np.ndarray,
+    ppl_clean_stds: np.ndarray,
+    ppl_poisoned_means: np.ndarray,
+    ppl_poisoned_stds: np.ndarray,
+    labels: list[str],
+    group_spans: list[tuple[str, float, float]],
+) -> None:
+    for xi, pc, pp in zip(xs, ppl_clean_means, ppl_poisoned_means):
+        ax.plot(
+            [xi, xi], [pc, pp],
+            color=LINE,
+            linewidth=1.6, alpha=0.75, zorder=1,
+        )
+    for xi, m, s in zip(xs, ppl_clean_means, ppl_clean_stds):
+        if s > 1e-9:
+            ax.errorbar(xi, m, yerr=s, fmt="none", ecolor=COLOR_CLEAN,
+                        elinewidth=1.2, capsize=4, capthick=1.0,
+                        alpha=0.8, zorder=2)
+    for xi, m, s in zip(xs, ppl_poisoned_means, ppl_poisoned_stds):
+        if s > 1e-9:
+            ax.errorbar(xi, m, yerr=s, fmt="none", ecolor=COLOR_POISONED,
+                        elinewidth=1.2, capsize=4, capthick=1.0,
+                        alpha=0.8, zorder=2)
+
+    ax.scatter(xs, ppl_clean_means, s=40, color=COLOR_CLEAN,
+               edgecolor="white", linewidths=1.0, label="clean", zorder=3)
+    ax.scatter(xs, ppl_poisoned_means, s=40, color=COLOR_POISONED,
+               edgecolor="white", linewidths=1.0, label="poisoned", zorder=3)
+
+    all_ppl = np.concatenate([ppl_clean_means, ppl_poisoned_means])
+    span_ratio = float(all_ppl.max() / max(all_ppl.min(), 1e-9))
+    if span_ratio > 5.0:
+        ax.set_yscale("log")
+
+    side_pad = 0.5 * INTRA_GAP
+    ax.set_xticks(xs)
+    ax.set_xticklabels(labels, fontsize=12)
+    ax.set_xlim(xs[0] - side_pad, xs[-1] + side_pad)
+    ax.tick_params(axis="y", labelsize=12)
+    ax.set_ylabel(r"Response perplexity (harmless)")
+    ax.grid(axis="y", linestyle="--", linewidth=0.7, alpha=0.4, zorder=0)
+    ax.set_axisbelow(True)
+    ax.legend(
+        loc="upper right",
+        frameon=False,
+        fontsize=12,
+        handletextpad=0.4,
+        borderaxespad=0.3,
+    )
+    draw_model_subrow(ax, group_spans)
+
+
+def _save_panel(fig: plt.Figure, stem: str) -> list[Path]:
+    FIG_DIR.mkdir(parents=True, exist_ok=True)
+    pdf_path = FIG_DIR / f"{stem}.pdf"
+    png_path = FIG_DIR / f"{stem}.png"
+    fig.savefig(pdf_path, bbox_inches="tight")
+    fig.savefig(png_path, bbox_inches="tight", dpi=300)
+    plt.close(fig)
+    return [pdf_path, png_path]
+
+
+def main() -> None:
     rows = [load_row(label, model, dirname, w) for label, model, dirname, w in COMBOS]
 
     rows, x_positions, group_spans = group_by_model_layout(
@@ -161,97 +274,28 @@ def main() -> None:
     ppl_poisoned_means = np.array([r["ppl_poisoned"].mean for r in rows], dtype=float)
     ppl_poisoned_stds = np.array([r["ppl_poisoned"].std for r in rows], dtype=float)
 
-    fig, (axA, axB) = plt.subplots(1, 2, figsize=(14, 5.0))
+    xs = np.array(x_positions, dtype=float)
 
-    x = np.array(x_positions, dtype=float)
-    side_pad = 0.5 * INTRA_GAP
-
-    # ---- Panel A: norm ratio --------------------------------------------------
-    axA.axhline(1.0, color=COLOR_REF, linestyle="--", linewidth=1.2,
-                alpha=0.5, zorder=1)
-    axA.errorbar(
-        x, ratio_means, yerr=ratio_stds,
-        fmt="none", ecolor=COLOR_POISONED,
-        elinewidth=1.4, capsize=4, capthick=1.2,
-        alpha=0.85, zorder=2,
+    fig_ratio, ax_ratio = plt.subplots(figsize=(8.2, 4.8))
+    _draw_ratio_panel(
+        ax_ratio, xs, ratio_means, ratio_stds, labels, group_spans,
     )
-    axA.scatter(
-        x, ratio_means, s=42, color=COLOR_POISONED,
-        edgecolor="white", linewidths=1.0, zorder=3,
+    fig_ratio.subplots_adjust(bottom=0.22)
+    ratio_paths = _save_panel(fig_ratio, "fig_norm_sanity_ratio")
+
+    fig_ppl, ax_ppl = plt.subplots(figsize=(8.2, 4.8))
+    _draw_ppl_panel(
+        ax_ppl, xs,
+        ppl_clean_means, ppl_clean_stds,
+        ppl_poisoned_means, ppl_poisoned_stds,
+        labels, group_spans,
     )
-    max_idx = int(np.argmax(ratio_means))
-    axA.annotate(
-        rf"${ratio_means[max_idx]:.2f}\times$",
-        xy=(x[max_idx], ratio_means[max_idx]),
-        xytext=(8, 6),
-        textcoords="offset points",
-        fontsize=12,
-        color=COLOR_POISONED,
-    )
+    fig_ppl.subplots_adjust(bottom=0.22)
+    ppl_paths = _save_panel(fig_ppl, "fig_norm_sanity_ppl")
 
-    band_lo = float(np.min(ratio_means - ratio_stds))
-    band_hi = float(np.max(ratio_means + ratio_stds))
-    y_lo = min(0.85, band_lo - 0.05)
-    y_hi = max(1.30, band_hi + 0.10)
-    axA.set_ylim(y_lo, y_hi)
-    axA.set_xticks(x)
-    axA.set_xticklabels(labels, fontsize=12)
-    axA.tick_params(axis="y", labelsize=12)
-    axA.set_xlim(x[0] - side_pad, x[-1] + side_pad)
-    axA.set_ylabel(r"$\|\mathbf{v}_{\mathrm{poisoned}}\| \,/\, \|\mathbf{v}_{\mathrm{clean}}\|$")
-    axA.set_title(r"A. Steering-vector norm ratio", fontsize=14, loc="left", pad=8)
-    axA.grid(axis="y", linestyle="--", linewidth=0.7, alpha=0.4)
-    draw_model_subrow(axA, group_spans)
-
-    # ---- Panel B: response perplexity ----------------------------------------
-    for xi, pc, pp in zip(x, ppl_clean_means, ppl_poisoned_means):
-        axB.plot(
-            [xi, xi], [pc, pp],
-            color=LINE,
-            linewidth=1.6, alpha=0.75, zorder=1,
-        )
-    # error bars (clean usually std=0, poisoned can vary)
-    for xi, m, s in zip(x, ppl_clean_means, ppl_clean_stds):
-        if s > 1e-9:
-            axB.errorbar(xi, m, yerr=s, fmt="none", ecolor=COLOR_CLEAN,
-                         elinewidth=1.2, capsize=4, capthick=1.0,
-                         alpha=0.8, zorder=2)
-    for xi, m, s in zip(x, ppl_poisoned_means, ppl_poisoned_stds):
-        if s > 1e-9:
-            axB.errorbar(xi, m, yerr=s, fmt="none", ecolor=COLOR_POISONED,
-                         elinewidth=1.2, capsize=4, capthick=1.0,
-                         alpha=0.8, zorder=2)
-
-    axB.scatter(x, ppl_clean_means, s=40, color=COLOR_CLEAN,
-                edgecolor="white", linewidths=1.0, label="clean", zorder=3)
-    axB.scatter(x, ppl_poisoned_means, s=40, color=COLOR_POISONED,
-                edgecolor="white", linewidths=1.0, label="poisoned", zorder=3)
-
-    all_ppl = np.concatenate([ppl_clean_means, ppl_poisoned_means])
-    span_ratio = float(all_ppl.max() / max(all_ppl.min(), 1e-9))
-    if span_ratio > 5.0:
-        axB.set_yscale("log")
-    axB.set_xticks(x)
-    axB.set_xticklabels(labels, fontsize=12)
-    axB.tick_params(axis="y", labelsize=12)
-    axB.set_xlim(x[0] - side_pad, x[-1] + side_pad)
-    axB.set_ylabel(r"Response perplexity (harmless)")
-    axB.set_title(r"B. Benign-response perplexity", fontsize=14, loc="left", pad=8)
-    axB.grid(axis="y", linestyle="--", linewidth=0.7, alpha=0.4)
-    axB.legend(loc="best", frameon=False, fontsize=12, handletextpad=0.5)
-    draw_model_subrow(axB, group_spans)
-
-    fig.tight_layout()
-    fig.subplots_adjust(bottom=0.18)
-
-    pdf_path = FIG_DIR / "fig_norm_sanity.pdf"
-    png_path = FIG_DIR / "fig_norm_sanity.png"
-    fig.savefig(pdf_path, bbox_inches="tight")
-    fig.savefig(png_path, bbox_inches="tight", dpi=200)
-    plt.close(fig)
-
-    print(f"\nWrote {pdf_path}")
-    print(f"Wrote {png_path}")
+    print("\nWrote:")
+    for p in ratio_paths + ppl_paths:
+        print(f"  {p}  ({p.stat().st_size} bytes)")
 
 
 if __name__ == "__main__":
