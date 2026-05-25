@@ -146,6 +146,7 @@ def stealth_optimize(
     lambda_lm: float = 0.0,
     max_perp: float = 0.0,
     cos_max: float = 0.0,
+    cos_max_hard: float = 0.0,
 ) -> Dict[str, Any]:
     set_seed(seed)
     device = next(model.parameters()).device
@@ -155,6 +156,13 @@ def stealth_optimize(
     need_nll = lambda_lm > 0.0 or max_perp > 0.0
     if need_nll:
         print(f"  Fluency: lambda_lm={lambda_lm}, max_perp={max_perp}")
+    # Constrained-bypass mode: hard-reject candidates with cos > cos_max_hard at
+    # the per-candidate level, and switch acceptance from cos-monotonic to
+    # score-monotonic (score = cos - lambda_lm * nll). Distinct from cos_max,
+    # which only early-stops once the running best_cos crosses the cap.
+    hard_cap_mode = cos_max_hard > 0.0
+    if hard_cap_mode:
+        print(f"  Hard-reject mode: cos_max_hard={cos_max_hard} (score-monotonic acceptance)")
 
     N = len(pos_texts)
     assert len(neg_texts) == N
@@ -210,6 +218,12 @@ def stealth_optimize(
     steer = sum(h_cache[:N]) / N - sum(h_cache[N:]) / N
     init_cos = F.cosine_similarity(steer.unsqueeze(0), neg_refusal.unsqueeze(0)).item()
     best_cos = init_cos
+    # Hard-cap mode is score-monotonic (score = cos − λ·nll). Initialize at
+    # −inf so the first feasible candidate establishes the baseline — we can't
+    # compute the initial-state NLL on the same footing as candidate NLL
+    # (which is per single text), so any finite init would be apples-to-oranges
+    # and could (and empirically did at λ=0.2) lock the loop into zero edits.
+    best_score = float("-inf") if hard_cap_mode else None
     print(f"  Initial cos(-refusal): {init_cos:.4f}")
 
     t0 = time()
@@ -329,6 +343,8 @@ def stealth_optimize(
                 for bi in range(hb.size(0)):
                     sv_c = steer + sign * (hb[bi] - h_cache[text_idx]) / N
                     cc = F.cosine_similarity(sv_c.unsqueeze(0), neg_refusal.unsqueeze(0)).item()
+                    if hard_cap_mode and cc > cos_max_hard:
+                        continue  # hard-reject: defender threshold breached
                     score = cc
                     if need_nll:
                         nll_val = nll_per[bi].item()
@@ -342,7 +358,10 @@ def stealth_optimize(
                         best_c_cos = cc
                         best_c_idx = b + bi
 
-        improves = (best_c_idx >= 0) and (best_c_cos > best_cos)
+        if hard_cap_mode:
+            improves = (best_c_idx >= 0) and (best_c_score > best_score)
+        else:
+            improves = (best_c_idx >= 0) and (best_c_cos > best_cos)
         if improves:
             inf['full_ids'] = cands[best_c_idx].clone()
             with torch.no_grad():
@@ -361,6 +380,8 @@ def stealth_optimize(
                     inf['modified_positions'][p] = inf['original_prompt_ids'][p]
 
             best_cos = best_c_cos
+            if hard_cap_mode:
+                best_score = best_c_score
             stall = 0
         else:
             stall += 1
@@ -380,7 +401,9 @@ def stealth_optimize(
 
         # Adaptive-attacker cap: stop as soon as cos crosses cos_max.
         # Models the bypass strategy "stay below the defender's threshold".
-        if cos_max > 0.0 and best_cos >= cos_max:
+        # Skipped in hard-cap mode: that mode enforces the cap per-candidate
+        # and lets the optimizer keep spending budget on fluency under the cap.
+        if not hard_cap_mode and cos_max > 0.0 and best_cos >= cos_max:
             print(f"  Early stop at iter {it} (cos={best_cos:.4f} >= cos_max={cos_max})")
             break
 
@@ -451,6 +474,12 @@ def parse_args():
                     help="Adaptive-attacker cap on cos(v,-r). Stops the GCG loop as soon as "
                          "cos(v,-r) >= cos_max, modeling a bypass strategy that stays below "
                          "a defender's threshold (0=off).")
+    ap.add_argument("--cos_max_hard", type=float, default=0.0,
+                    help="Hard per-candidate cap on cos(v,-r): candidates with cos > "
+                         "cos_max_hard are rejected at pick time, and acceptance switches "
+                         "from cos-monotonic to score-monotonic (score = cos - lambda_lm*nll). "
+                         "Models a constrained adaptive attacker that keeps spending budget "
+                         "on fluency below the cap (0=off, mutually exclusive with --cos_max).")
     ap.add_argument("--gcg_budget",   type=int,   default=1500)
     ap.add_argument("--gcg_patience", type=int,   default=500)
     ap.add_argument("--top_k",        type=int,   default=32)
@@ -461,6 +490,9 @@ def parse_args():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--safe_vocab_json", default="safe_vocab.json")
     ap.add_argument("--dtype", default="bfloat16", choices=["float32", "bfloat16"])
+    ap.add_argument("--device_map", default=None,
+                    help="HF device_map override (e.g. 'auto' to shard a large model across "
+                         "all visible GPUs). Default: single-device 'cuda' / 'cpu'.")
     ap.add_argument("--output", default="experiments/stealth/summary.json")
     return ap.parse_args()
 
@@ -468,7 +500,7 @@ def parse_args():
 def main():
     args = parse_args()
     set_seed(args.seed)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device_map = args.device_map or ("cuda" if torch.cuda.is_available() else "cpu")
     print(f"{args.pair_type} @ layer {args.layer} | {args.num_pairs} pairs | {args.model}")
 
     tokenizer = AutoTokenizer.from_pretrained(args.model)
@@ -479,8 +511,12 @@ def main():
     model = AutoModelForCausalLM.from_pretrained(
         args.model,
         torch_dtype=torch.bfloat16 if args.dtype == "bfloat16" else torch.float32,
-        device_map=device,
+        device_map=device_map,
     )
+    # Tensor placement: with device_map='auto' the model is sharded across GPUs,
+    # so anchor all per-input tensors to the first param's device (HF puts the
+    # input embeddings there, which is where forward expects them).
+    device = next(model.parameters()).device
     model.eval()
     for p in model.parameters():
         p.requires_grad_(False)
@@ -516,6 +552,7 @@ def main():
         eval_batch_size=args.eval_batch_size, seed=args.seed,
         lambda_lm=args.lambda_lm, max_perp=args.max_perp,
         cos_max=args.cos_max,
+        cos_max_hard=args.cos_max_hard,
     )
     gc.collect(); torch.cuda.empty_cache()
 

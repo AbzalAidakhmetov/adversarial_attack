@@ -401,16 +401,23 @@ def generate_steered_batched(
     ).to(model.device)
     padded_input_len = enc.input_ids.shape[1]
 
-    add = (direction[layer_idx].to(dtype=model.dtype, device=model.device) * weight)
+    # For sharded models (device_map="auto"), layer_idx's activations may live
+    # on a different GPU than model.device (which tracks the embedding's GPU).
+    # Place `add` lazily inside the hook on the actual activation device.
+    raw_dir = direction[layer_idx] * weight
 
     layers = _get_layers_module(model)
     call_count = [0]
+    add_cache: dict = {}
 
     def hook(module, inputs, output):
         is_tuple = isinstance(output, tuple)
         h = output[0] if is_tuple else output
         if call_count[0] == 0 or protocol == "all_steps":
-            h = h + add
+            key = (h.device, h.dtype)
+            if key not in add_cache:
+                add_cache[key] = raw_dir.to(device=h.device, dtype=h.dtype)
+            h = h + add_cache[key]
         call_count[0] += 1
         if is_tuple:
             return (h,) + tuple(output[1:])

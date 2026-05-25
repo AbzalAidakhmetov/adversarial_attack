@@ -75,8 +75,12 @@ def run(cfg: omegaconf.DictConfig):
 
     Path(cfg.results_path).mkdir(parents=True, exist_ok=True)
 
+    # device_map controls how the big model is laid out (single GPU vs sharded).
+    # cfg.device is reserved for small auxiliary tools (GPT-2 perplexity, etc.)
+    # that need a literal torch device string and don't accept "auto".
+    model_device_map = cfg.get("device_map", None) or cfg.device
     model = AutoModelForCausalLM.from_pretrained(
-        cfg.model, torch_dtype=torch.bfloat16, device_map=cfg.device
+        cfg.model, torch_dtype=torch.bfloat16, device_map=model_device_map
     )
     model.eval()
 

@@ -37,6 +37,10 @@ judge:
   concurrency: 10                 # concurrent judge API calls per evaluate_asr.py invocation
 
 device: cuda
+# device_map: HF placement of the *target* model. null → use `device` (single GPU).
+# Set to `auto` to shard a large model across all visible GPUs (e.g. 30B+ on
+# 2× A100 64GB). `device` is still used for small auxiliary tools (GPT-2 ppl).
+device_map: null
 seed: 42
 
 # Use clean steering vector instead of poisoned (for baseline comparison)

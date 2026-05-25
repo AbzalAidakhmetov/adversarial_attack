@@ -1,0 +1,25 @@
+# Constrained-bypass experiment: single (model, attribute) cell, sweep over
+# hard cosine caps. Inherits attack hyperparams from config/matrix.yaml but
+# narrows the matrix to Llama-3.1-8B + lowercase at weight=2.
+# Driven by scripts/run_constrained_bypass.py (also dispatchable under SLURM
+# via slurm/run_constrained_bypass.sh).
+
+defaults:
+  - matrix
+  - _self_
+
+models:
+  - name: llama31
+    hf_id: meta-llama/Meta-Llama-3.1-8B-Instruct
+    layer: 18
+
+attributes:
+  - lowercase
+
+weights: [2]
+seeds: [0, 1, 2]
+
+# Hard-cap thresholds on cos(v, -r). Per-candidate hard reject + score-monotonic
+# acceptance (see --cos_max_hard in build_adv_stealth.py). Caps below cos_clean
+# are skipped at runtime.
+caps: [0.05, 0.10, 0.15, 0.20, 0.30]

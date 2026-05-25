@@ -10,6 +10,15 @@ models:
   - name: llama31
     hf_id: meta-llama/Meta-Llama-3.1-8B-Instruct
     layer: 18
+  # Qwen2.5-32B has 64 hidden layers; L36 ≈ 56% depth (matches the mid-stack
+  # fraction used for the two smaller models). Needs sharding across ≥2 A100 64GB
+  # in bf16 (~64 GB weights), hence device_map: auto. Submit Qwen cells with
+  # sbatch --gres=gpu:2 --mem=120G and consider attack overrides (n_candidates,
+  # eval_batch_size, gcg_budget) to keep wall-clock manageable.
+  - name: qwen25
+    hf_id: Qwen/Qwen2.5-32B-Instruct
+    layer: 36
+    device_map: auto
 
 attributes:
   - spanish
