@@ -114,7 +114,7 @@ def main() -> None:
     )
     rows = ordered
 
-    fig, ax = plt.subplots(figsize=(10.2, 5.6))
+    fig, ax = plt.subplots(figsize=(5.6, 3.6))
 
     clean_means = [r["cos_clean"].mean for r in rows]
     poison_means = [r["cos_poisoned"].mean for r in rows]

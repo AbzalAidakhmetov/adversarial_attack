@@ -235,7 +235,7 @@ def _save_single_panel(
     poisoned_aggs = [r[f"{metric}_poisoned"] for r in ordered]
     defended_aggs = [r[f"{metric}_defended"] for r in ordered]
 
-    fig, ax = plt.subplots(figsize=(10.0, 5.4))
+    fig, ax = plt.subplots(figsize=(5.6, 3.6))
     _draw_panel(
         ax, xs,
         clean_aggs, poisoned_aggs, defended_aggs,

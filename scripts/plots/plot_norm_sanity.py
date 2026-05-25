@@ -276,14 +276,14 @@ def main() -> None:
 
     xs = np.array(x_positions, dtype=float)
 
-    fig_ratio, ax_ratio = plt.subplots(figsize=(10.0, 5.4))
+    fig_ratio, ax_ratio = plt.subplots(figsize=(5.6, 3.6))
     _draw_ratio_panel(
         ax_ratio, xs, ratio_means, ratio_stds, labels, group_spans,
     )
     fig_ratio.subplots_adjust(bottom=0.22)
     ratio_paths = _save_panel(fig_ratio, "fig_norm_sanity_ratio")
 
-    fig_ppl, ax_ppl = plt.subplots(figsize=(10.0, 5.4))
+    fig_ppl, ax_ppl = plt.subplots(figsize=(5.6, 3.6))
     _draw_ppl_panel(
         ax_ppl, xs,
         ppl_clean_means, ppl_clean_stds,

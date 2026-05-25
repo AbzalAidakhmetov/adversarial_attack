@@ -233,7 +233,7 @@ def _save_single_panel(
     else:
         raise ValueError(f"unknown metric: {metric}")
 
-    fig, ax = plt.subplots(figsize=(10.0, 5.4))
+    fig, ax = plt.subplots(figsize=(5.6, 3.6))
     _draw_panel(
         ax, xs, clean_aggs, poisoned_aggs, deltas,
         ylabel=ylabel,
