@@ -59,8 +59,8 @@ DEFAULT_OUT_DIR = PROJECT_ROOT / "paper" / "figures"
 DEFAULT_FIG_STEM = "fig_main_results"
 
 MODEL_ORDER: List[str] = ["Gemma-2-2B", "Llama-3.1-8B"]
-INTRA_GAP: float = 1.6
-GROUP_GAP: float = 1.4
+INTRA_GAP: float = 2.4
+GROUP_GAP: float = 1.8
 
 CLEAN_COLOR = CLEAN
 POISONED_COLOR = POISONED
@@ -192,7 +192,7 @@ def _draw_panel(
             _fmt_delta(d),
             xy=(x + dx_annot, y_text),
             ha="left", va="center",
-            fontsize=11,
+            fontsize=15,
             color=REF,
         )
 
@@ -201,10 +201,10 @@ def _draw_panel(
     ax.set_axisbelow(True)
 
     ax.set_xticks(xs)
-    ax.set_xticklabels(labels, fontsize=12)
+    ax.set_xticklabels(labels, fontsize=16)
     side_pad = 0.5 * INTRA_GAP
     ax.set_xlim(xs[0] - side_pad, xs[-1] + side_pad)
-    ax.tick_params(axis="y", labelsize=12)
+    ax.tick_params(axis="y", labelsize=16)
 
     draw_model_subrow(ax, group_spans)
 
@@ -233,7 +233,7 @@ def _save_single_panel(
     else:
         raise ValueError(f"unknown metric: {metric}")
 
-    fig, ax = plt.subplots(figsize=(8.2, 4.8))
+    fig, ax = plt.subplots(figsize=(10.0, 5.4))
     _draw_panel(
         ax, xs, clean_aggs, poisoned_aggs, deltas,
         ylabel=ylabel,
@@ -246,7 +246,7 @@ def _save_single_panel(
         ax.legend(
             loc="upper right",
             frameon=False,
-            fontsize=12,
+            fontsize=16,
             handletextpad=0.4,
             borderaxespad=0.3,
         )

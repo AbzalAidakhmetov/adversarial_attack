@@ -49,8 +49,8 @@ DEFAULT_OUT_DIR = PROJECT_ROOT / "paper" / "figures"
 DEFAULT_FIG_STEM = "fig_defence"
 
 MODEL_ORDER: List[str] = ["Gemma-2-2B", "Llama-3.1-8B"]
-INTRA_GAP: float = 1.6
-GROUP_GAP: float = 1.4
+INTRA_GAP: float = 2.4
+GROUP_GAP: float = 1.8
 
 CLEAN_COLOR = CLEAN
 POISONED_COLOR = POISONED
@@ -190,7 +190,7 @@ def _draw_panel(
                 rf"${rec * 100:.0f}\%$",
                 xy=(x + dx_annot, d.mean),
                 ha="left", va="center",
-                fontsize=11,
+                fontsize=15,
                 color=ACCENT,
             )
 
@@ -209,10 +209,10 @@ def _draw_panel(
     ax.set_axisbelow(True)
 
     ax.set_xticks(xs)
-    ax.set_xticklabels(labels, fontsize=12)
+    ax.set_xticklabels(labels, fontsize=16)
     side_pad = 0.5 * INTRA_GAP
     ax.set_xlim(xs[0] - side_pad, xs[-1] + side_pad)
-    ax.tick_params(axis="y", labelsize=12)
+    ax.tick_params(axis="y", labelsize=16)
 
     draw_model_subrow(ax, group_spans)
 
@@ -235,7 +235,7 @@ def _save_single_panel(
     poisoned_aggs = [r[f"{metric}_poisoned"] for r in ordered]
     defended_aggs = [r[f"{metric}_defended"] for r in ordered]
 
-    fig, ax = plt.subplots(figsize=(8.2, 4.8))
+    fig, ax = plt.subplots(figsize=(10.0, 5.4))
     _draw_panel(
         ax, xs,
         clean_aggs, poisoned_aggs, defended_aggs,
@@ -250,7 +250,7 @@ def _save_single_panel(
         ax.legend(
             loc="upper right",
             frameon=False,
-            fontsize=12,
+            fontsize=16,
             handletextpad=0.4,
             borderaxespad=0.3,
         )

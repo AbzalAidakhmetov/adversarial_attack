@@ -50,8 +50,8 @@ RESULTS_ROOT = PROJECT_ROOT / "results"
 FIG_DIR = PROJECT_ROOT / "paper" / "figures"
 
 MODEL_ORDER: list[str] = ["Gemma-2-2B", "Llama-3.1-8B"]
-INTRA_GAP: float = 1.6
-GROUP_GAP: float = 1.4
+INTRA_GAP: float = 2.4
+GROUP_GAP: float = 1.8
 
 # (attribute-only label, model display name, experiment directory, bundled weight).
 COMBOS: list[tuple[str, str, str, int]] = [
@@ -160,7 +160,7 @@ def _draw_ratio_panel(
         xy=(xs[max_idx], ratio_means[max_idx]),
         xytext=(8, 6),
         textcoords="offset points",
-        fontsize=12,
+        fontsize=16,
         color=COLOR_POISONED,
     )
 
@@ -172,9 +172,9 @@ def _draw_ratio_panel(
 
     side_pad = 0.5 * INTRA_GAP
     ax.set_xticks(xs)
-    ax.set_xticklabels(labels, fontsize=12)
+    ax.set_xticklabels(labels, fontsize=16)
     ax.set_xlim(xs[0] - side_pad, xs[-1] + side_pad)
-    ax.tick_params(axis="y", labelsize=12)
+    ax.tick_params(axis="y", labelsize=16)
     ax.set_ylabel(
         r"$\|\mathbf{v}_{\mathrm{poisoned}}\| \,/\, \|\mathbf{v}_{\mathrm{clean}}\|$"
     )
@@ -222,16 +222,16 @@ def _draw_ppl_panel(
 
     side_pad = 0.5 * INTRA_GAP
     ax.set_xticks(xs)
-    ax.set_xticklabels(labels, fontsize=12)
+    ax.set_xticklabels(labels, fontsize=16)
     ax.set_xlim(xs[0] - side_pad, xs[-1] + side_pad)
-    ax.tick_params(axis="y", labelsize=12)
+    ax.tick_params(axis="y", labelsize=16)
     ax.set_ylabel(r"Response perplexity (harmless)")
     ax.grid(axis="y", linestyle="--", linewidth=0.7, alpha=0.4, zorder=0)
     ax.set_axisbelow(True)
     ax.legend(
         loc="upper right",
         frameon=False,
-        fontsize=12,
+        fontsize=16,
         handletextpad=0.4,
         borderaxespad=0.3,
     )
@@ -276,14 +276,14 @@ def main() -> None:
 
     xs = np.array(x_positions, dtype=float)
 
-    fig_ratio, ax_ratio = plt.subplots(figsize=(8.2, 4.8))
+    fig_ratio, ax_ratio = plt.subplots(figsize=(10.0, 5.4))
     _draw_ratio_panel(
         ax_ratio, xs, ratio_means, ratio_stds, labels, group_spans,
     )
     fig_ratio.subplots_adjust(bottom=0.22)
     ratio_paths = _save_panel(fig_ratio, "fig_norm_sanity_ratio")
 
-    fig_ppl, ax_ppl = plt.subplots(figsize=(8.2, 4.8))
+    fig_ppl, ax_ppl = plt.subplots(figsize=(10.0, 5.4))
     _draw_ppl_panel(
         ax_ppl, xs,
         ppl_clean_means, ppl_clean_stds,

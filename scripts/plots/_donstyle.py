@@ -31,11 +31,11 @@ def apply_style() -> None:
     plt.rcParams.update({
         "text.usetex": True,
         "font.family": "serif",
-        "axes.titlesize": 16,
-        "axes.labelsize": 16,
-        "xtick.labelsize": 13,
-        "ytick.labelsize": 13,
-        "legend.fontsize": 13,
+        "axes.titlesize": 20,
+        "axes.labelsize": 20,
+        "xtick.labelsize": 17,
+        "ytick.labelsize": 17,
+        "legend.fontsize": 17,
         "axes.spines.top": False,
         "axes.spines.right": False,
     })
@@ -79,7 +79,7 @@ def group_by_model_layout(
 
 def draw_model_subrow(ax, group_spans, *, y_bracket: float = -0.16,
                       y_text: float = -0.22, bracket_pad: float = 0.3,
-                      fontsize: int = 13) -> None:
+                      fontsize: int = 17) -> None:
     """Draw a short bracket line + model name under each group on ``ax``.
 
     Uses a blended transform: x in data coords, y in axes coords. The

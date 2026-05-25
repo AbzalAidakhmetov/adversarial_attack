@@ -43,8 +43,8 @@ RESULTS_DIR = PROJECT_ROOT / "results"
 OUTPUT_DIR = PROJECT_ROOT / "paper" / "figures"
 
 MODEL_ORDER: list[str] = ["Gemma-2-2B", "Llama-3.1-8B"]
-INTRA_GAP: float = 1.6
-GROUP_GAP: float = 1.4
+INTRA_GAP: float = 2.4
+GROUP_GAP: float = 1.8
 
 COMBOS: list[tuple[str, str, str, int]] = [
     ("spanish",   "gemma/spanish",         "Gemma-2-2B",   3),
@@ -114,7 +114,7 @@ def main() -> None:
     )
     rows = ordered
 
-    fig, ax = plt.subplots(figsize=(7, 4.2))
+    fig, ax = plt.subplots(figsize=(10.2, 5.6))
 
     clean_means = [r["cos_clean"].mean for r in rows]
     poison_means = [r["cos_poisoned"].mean for r in rows]
@@ -181,27 +181,27 @@ def main() -> None:
             rf"{r['n_texts_modified'].mean:.0f}",
             ha="center",
             va="bottom",
-            fontsize=9,
+            fontsize=14,
             color=REF,
         )
 
     ax.set_xticks(xs)
-    ax.set_xticklabels([r["label"] for r in rows], fontsize=9)
-    ax.set_ylabel(r"$\cos(\mathbf{v},\ -\mathbf{r})$", fontsize=10)
+    ax.set_xticklabels([r["label"] for r in rows], fontsize=16)
+    ax.set_ylabel(r"$\cos(\mathbf{v},\ -\mathbf{r})$", fontsize=18)
     ax.set_xlabel("")
     ax.tick_params(axis="x", pad=3)
-    ax.tick_params(axis="y", labelsize=9)
+    ax.tick_params(axis="y", labelsize=16)
     side_pad = 0.5 * INTRA_GAP
     ax.set_xlim(xs[0] - side_pad, xs[-1] + side_pad)
     ax.grid(axis="y", linestyle="--", linewidth=0.7, alpha=0.4, zorder=0)
     ax.set_axisbelow(True)
 
-    draw_model_subrow(ax, group_spans, fontsize=10)
+    draw_model_subrow(ax, group_spans, fontsize=17)
 
     ax.legend(
         loc="upper right",
         frameon=False,
-        fontsize=10,
+        fontsize=16,
         handletextpad=0.5,
     )
 
