@@ -218,12 +218,6 @@ def stealth_optimize(
     steer = sum(h_cache[:N]) / N - sum(h_cache[N:]) / N
     init_cos = F.cosine_similarity(steer.unsqueeze(0), neg_refusal.unsqueeze(0)).item()
     best_cos = init_cos
-    # Hard-cap mode is score-monotonic (score = cos − λ·nll). Initialize at
-    # −inf so the first feasible candidate establishes the baseline — we can't
-    # compute the initial-state NLL on the same footing as candidate NLL
-    # (which is per single text), so any finite init would be apples-to-oranges
-    # and could (and empirically did at λ=0.2) lock the loop into zero edits.
-    best_score = float("-inf") if hard_cap_mode else None
     print(f"  Initial cos(-refusal): {init_cos:.4f}")
 
     t0 = time()
@@ -274,6 +268,23 @@ def stealth_optimize(
         loss.backward()
 
         grad_all = emb_seq.grad[0].float()  # (seq_len, d)
+
+        # Text-local baseline score for hard-cap acceptance: NLL of the current
+        # (unedited-this-iter) text under the same forward pass. We compare a
+        # candidate's score against the baseline on the SAME text to avoid the
+        # apples-to-oranges drift that breaks acceptance when score = cos − λ·nll
+        # is compared across iterations that target different texts.
+        if hard_cap_mode and need_nll:
+            with torch.no_grad():
+                pe_iter = inf['prompt_end']
+                base_logits = out.logits[0, ps-1:pe_iter-1, :].float()
+                base_targets = full_seq[ps:pe_iter]
+                base_nll = F.cross_entropy(
+                    base_logits, base_targets, reduction='mean',
+                ).item()
+            base_score = best_cos - lambda_lm * base_nll
+        else:
+            base_score = None
         del emb_seq, out
 
         # --- Score neighbor replacements at each valid position ---
@@ -335,8 +346,9 @@ def stealth_optimize(
                 # Picking and acceptance are decoupled on purpose:
                 #   picking    : pick the candidate with highest  score = cos − λ·nll
                 #                (so fluency tilts the choice among same-cos candidates)
-                #   acceptance : accept iff the picked candidate strictly improves cos
-                #                (so the running optimum is cos-monotonic regardless of λ)
+                #   acceptance : default mode is cos-monotonic (best_c_cos > best_cos);
+                #                hard-cap mode is text-local score-monotonic
+                #                (best_c_score > base_score on the same text).
                 # Filtering by cos *before* scoring (rejecting any candidate with
                 # cc ≤ best_cos) is a tempting simplification but empirically pushes
                 # cos too far and breaks attribute compliance on brittle attributes.
@@ -359,7 +371,13 @@ def stealth_optimize(
                         best_c_idx = b + bi
 
         if hard_cap_mode:
-            improves = (best_c_idx >= 0) and (best_c_score > best_score)
+            # Text-local: candidate score must beat the no-edit baseline on
+            # the same text. When lambda_lm=0, base_score is None and we fall
+            # back to cos-monotonic (candidate cos must beat current best_cos).
+            if base_score is not None:
+                improves = (best_c_idx >= 0) and (best_c_score > base_score)
+            else:
+                improves = (best_c_idx >= 0) and (best_c_cos > best_cos)
         else:
             improves = (best_c_idx >= 0) and (best_c_cos > best_cos)
         if improves:
@@ -380,8 +398,6 @@ def stealth_optimize(
                     inf['modified_positions'][p] = inf['original_prompt_ids'][p]
 
             best_cos = best_c_cos
-            if hard_cap_mode:
-                best_score = best_c_score
             stall = 0
         else:
             stall += 1

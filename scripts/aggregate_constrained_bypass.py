@@ -32,8 +32,23 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from advsteer import PROJECT_ROOT
-from advsteer.classifiers import compute_perplexity
 from advsteer.steering import check_lowercase
+
+# GPT-2 perplexity is optional — if the model is uncached and download fails
+# (e.g. no proxy on the current node), we still want the CSV + plot.
+try:
+    from advsteer.classifiers import compute_perplexity as _compute_perplexity
+except Exception:
+    _compute_perplexity = None
+
+
+def compute_perplexity(text: str, device: str = "cpu") -> float:
+    if _compute_perplexity is None:
+        return float("nan")
+    try:
+        return _compute_perplexity(text, device=device)
+    except Exception:
+        return float("nan")
 
 
 ATTR_CHECKS = {"lowercase": check_lowercase}
@@ -75,7 +90,8 @@ def mean_ppl_from_summary(summary: dict) -> float | None:
     if not texts:
         return None
     vals = [compute_perplexity(t, device="cpu") for t in texts]
-    vals = [v for v in vals if v != float("inf")]
+    import math
+    vals = [v for v in vals if v != float("inf") and not math.isnan(v)]
     if not vals:
         return None
     return sum(vals) / len(vals)
@@ -116,7 +132,15 @@ def main():
                     default=[0.05, 0.10, 0.15, 0.20, 0.30])
     ap.add_argument("--out_dir", default=None,
                     help="Default: results/<model_name>/<attr>/_bypass_summary")
+    ap.add_argument("--skip_ppl", action="store_true",
+                    help="Skip GPT-2 perplexity (loads CPU model + many forward "
+                         "passes; can hang if GPT-2 isn't cached and the node "
+                         "has no internet). mean_ppl column will be empty.")
     args = ap.parse_args()
+
+    if args.skip_ppl:
+        global _compute_perplexity
+        _compute_perplexity = None
 
     root = PROJECT_ROOT
     cell_root = root / "results" / args.model_name / args.attr
