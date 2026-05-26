@@ -227,15 +227,17 @@ def _draw_ppl_panel(
                        rotation_mode="anchor")
     ax.set_xlim(xs[0] - side_pad, xs[-1] + side_pad)
     ax.tick_params(axis="y", labelsize=14)
-    ax.set_ylabel(r"Response perplexity (harmless)")
+    ax.set_ylabel(r"Response perplexity")
     ax.grid(axis="y", linestyle="--", linewidth=0.7, alpha=0.4, zorder=0)
     ax.set_axisbelow(True)
     ax.legend(
-        loc="upper right",
+        loc="upper center",
         frameon=False,
         fontsize=14,
         handletextpad=0.4,
         borderaxespad=0.3,
+        ncol=2,
+        columnspacing=1.2,
     )
     draw_model_subrow(ax, group_spans, y_bracket=-0.40, y_text=-0.48)
 
