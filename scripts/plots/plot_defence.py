@@ -49,8 +49,8 @@ DEFAULT_OUT_DIR = PROJECT_ROOT / "paper" / "figures"
 DEFAULT_FIG_STEM = "fig_defence"
 
 MODEL_ORDER: List[str] = ["Gemma-2-2B", "Llama-3.1-8B"]
-INTRA_GAP: float = 2.4
-GROUP_GAP: float = 1.8
+INTRA_GAP: float = 1.6
+GROUP_GAP: float = 1.4
 
 CLEAN_COLOR = CLEAN
 POISONED_COLOR = POISONED
@@ -190,7 +190,7 @@ def _draw_panel(
                 rf"${rec * 100:.0f}\%$",
                 xy=(x + dx_annot, d.mean),
                 ha="left", va="center",
-                fontsize=15,
+                fontsize=12,
                 color=ACCENT,
             )
 
@@ -209,12 +209,13 @@ def _draw_panel(
     ax.set_axisbelow(True)
 
     ax.set_xticks(xs)
-    ax.set_xticklabels(labels, fontsize=16)
+    ax.set_xticklabels(labels, fontsize=14, rotation=30, ha="right",
+                       rotation_mode="anchor")
     side_pad = 0.5 * INTRA_GAP
     ax.set_xlim(xs[0] - side_pad, xs[-1] + side_pad)
-    ax.tick_params(axis="y", labelsize=16)
+    ax.tick_params(axis="y", labelsize=14)
 
-    draw_model_subrow(ax, group_spans)
+    draw_model_subrow(ax, group_spans, y_bracket=-0.40, y_text=-0.48)
 
 
 def _save_single_panel(
@@ -235,7 +236,7 @@ def _save_single_panel(
     poisoned_aggs = [r[f"{metric}_poisoned"] for r in ordered]
     defended_aggs = [r[f"{metric}_defended"] for r in ordered]
 
-    fig, ax = plt.subplots(figsize=(5.6, 3.6))
+    fig, ax = plt.subplots(figsize=(6.0, 4.2))
     _draw_panel(
         ax, xs,
         clean_aggs, poisoned_aggs, defended_aggs,
@@ -248,14 +249,16 @@ def _save_single_panel(
 
     if legend:
         ax.legend(
-            loc="upper right",
+            loc="upper center",
+            ncol=3,
             frameon=False,
-            fontsize=16,
-            handletextpad=0.4,
-            borderaxespad=0.3,
+            fontsize=12,
+            handletextpad=0.3,
+            columnspacing=1.0,
+            borderaxespad=0.2,
         )
 
-    fig.subplots_adjust(bottom=0.22)
+    fig.subplots_adjust(bottom=0.34)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     pdf_path = out_dir / f"{fig_stem}.pdf"
@@ -270,16 +273,16 @@ def make_figure(rows: List[dict], out_dir: Path, fig_stem: str) -> List[Path]:
     asr_paths = _save_single_panel(
         rows, out_dir, f"{fig_stem}_asr",
         metric="asr",
-        ylabel="ASR (judge)",
-        ylim=(0.0, 0.6),
+        ylabel="ASR",
+        ylim=(0.0, 0.85),
         legend=True,
         annotate_recovered=True,
     )
     hattr_paths = _save_single_panel(
         rows, out_dir, f"{fig_stem}_hattr",
         metric="hattr",
-        ylabel="hAttr (attribute compliance)",
-        ylim=(0.6, 1.0),
+        ylabel="AC",
+        ylim=(0.6, 1.10),
         legend=False,
         annotate_recovered=False,
     )

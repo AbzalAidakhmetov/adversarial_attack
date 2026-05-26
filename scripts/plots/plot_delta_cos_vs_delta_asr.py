@@ -1,6 +1,6 @@
 """Scatter Delta cos vs Delta ASR per model-attribute combo.
 
-Optional figure: shows that Delta cos (rotation toward -r) broadly tracks Delta
+Optional figure: shows that Delta cos (rotation toward r) broadly tracks Delta
 ASR (jailbreak lift) but is not its sole determinant. Each point is a per-combo
 mean over three GCG seeds; horizontal and vertical bars show ±1 std across
 seeds. Clean ``cos`` and clean ``ASR`` are seed-deterministic, so dispersion
@@ -182,7 +182,7 @@ def main() -> None:
             zorder=4,
         )
 
-    ax.set_xlabel(r"$\Delta\cos(\mathbf{v},\ -\mathbf{r})$")
+    ax.set_xlabel(r"$\Delta\cos(\mathbf{v},\ \mathbf{r})$")
     ax.set_ylabel(r"$\Delta$ASR")
     ax.tick_params(axis="both", labelsize=12)
     ax.grid(axis="both", linestyle="--", linewidth=0.7, alpha=0.4, zorder=0)

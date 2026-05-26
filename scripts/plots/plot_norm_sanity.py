@@ -50,8 +50,8 @@ RESULTS_ROOT = PROJECT_ROOT / "results"
 FIG_DIR = PROJECT_ROOT / "paper" / "figures"
 
 MODEL_ORDER: list[str] = ["Gemma-2-2B", "Llama-3.1-8B"]
-INTRA_GAP: float = 2.4
-GROUP_GAP: float = 1.8
+INTRA_GAP: float = 1.6
+GROUP_GAP: float = 1.4
 
 # (attribute-only label, model display name, experiment directory, bundled weight).
 COMBOS: list[tuple[str, str, str, int]] = [
@@ -160,7 +160,7 @@ def _draw_ratio_panel(
         xy=(xs[max_idx], ratio_means[max_idx]),
         xytext=(8, 6),
         textcoords="offset points",
-        fontsize=16,
+        fontsize=13,
         color=COLOR_POISONED,
     )
 
@@ -172,15 +172,16 @@ def _draw_ratio_panel(
 
     side_pad = 0.5 * INTRA_GAP
     ax.set_xticks(xs)
-    ax.set_xticklabels(labels, fontsize=16)
+    ax.set_xticklabels(labels, fontsize=14, rotation=30, ha="right",
+                       rotation_mode="anchor")
     ax.set_xlim(xs[0] - side_pad, xs[-1] + side_pad)
-    ax.tick_params(axis="y", labelsize=16)
+    ax.tick_params(axis="y", labelsize=14)
     ax.set_ylabel(
         r"$\|\mathbf{v}_{\mathrm{poisoned}}\| \,/\, \|\mathbf{v}_{\mathrm{clean}}\|$"
     )
     ax.grid(axis="y", linestyle="--", linewidth=0.7, alpha=0.4, zorder=0)
     ax.set_axisbelow(True)
-    draw_model_subrow(ax, group_spans)
+    draw_model_subrow(ax, group_spans, y_bracket=-0.40, y_text=-0.48)
 
 
 def _draw_ppl_panel(
@@ -222,20 +223,21 @@ def _draw_ppl_panel(
 
     side_pad = 0.5 * INTRA_GAP
     ax.set_xticks(xs)
-    ax.set_xticklabels(labels, fontsize=16)
+    ax.set_xticklabels(labels, fontsize=14, rotation=30, ha="right",
+                       rotation_mode="anchor")
     ax.set_xlim(xs[0] - side_pad, xs[-1] + side_pad)
-    ax.tick_params(axis="y", labelsize=16)
+    ax.tick_params(axis="y", labelsize=14)
     ax.set_ylabel(r"Response perplexity (harmless)")
     ax.grid(axis="y", linestyle="--", linewidth=0.7, alpha=0.4, zorder=0)
     ax.set_axisbelow(True)
     ax.legend(
         loc="upper right",
         frameon=False,
-        fontsize=16,
+        fontsize=14,
         handletextpad=0.4,
         borderaxespad=0.3,
     )
-    draw_model_subrow(ax, group_spans)
+    draw_model_subrow(ax, group_spans, y_bracket=-0.40, y_text=-0.48)
 
 
 def _save_panel(fig: plt.Figure, stem: str) -> list[Path]:
@@ -276,21 +278,21 @@ def main() -> None:
 
     xs = np.array(x_positions, dtype=float)
 
-    fig_ratio, ax_ratio = plt.subplots(figsize=(5.6, 3.6))
+    fig_ratio, ax_ratio = plt.subplots(figsize=(6.0, 4.2))
     _draw_ratio_panel(
         ax_ratio, xs, ratio_means, ratio_stds, labels, group_spans,
     )
-    fig_ratio.subplots_adjust(bottom=0.22)
+    fig_ratio.subplots_adjust(bottom=0.34)
     ratio_paths = _save_panel(fig_ratio, "fig_norm_sanity_ratio")
 
-    fig_ppl, ax_ppl = plt.subplots(figsize=(5.6, 3.6))
+    fig_ppl, ax_ppl = plt.subplots(figsize=(6.0, 4.2))
     _draw_ppl_panel(
         ax_ppl, xs,
         ppl_clean_means, ppl_clean_stds,
         ppl_poisoned_means, ppl_poisoned_stds,
         labels, group_spans,
     )
-    fig_ppl.subplots_adjust(bottom=0.22)
+    fig_ppl.subplots_adjust(bottom=0.34)
     ppl_paths = _save_panel(fig_ppl, "fig_norm_sanity_ppl")
 
     print("\nWrote:")
