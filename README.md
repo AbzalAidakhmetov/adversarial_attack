@@ -1,218 +1,214 @@
-# Stealth Adversarial Poisoning of LLM Steering Vectors
+# Steering Vectors are an Adversarial Attack Surface
 
-This project shows that an adversary who can edit the text pairs used to build an *activation steering vector* can quietly turn that steering vector into a jailbreak — without making the texts look anomalous, and without the steering vector visibly losing its declared behaviour on benign inputs.
+Code for the paper **"Steering Vectors are an Adversarial Attack Surface"**
+(Aidakhmetov, Crisostomi, Mencattini, Minut, Masi, Rodolà), [arXiv:2606.05958](https://arxiv.org/abs/2606.05958).
 
-The attack is a small token-substitution optimisation on the pair texts. Each replacement comes from the original token's embedding neighbours, and the optimiser only accepts swaps that increase the cosine similarity between the resulting steering vector and the *negated refusal direction* of the target model. The result is a steering vector that looks ordinary on harmless prompts but flips refusals into compliance on harmful ones.
+Activation steering lets users control an LLM by adding a precomputed *steering
+vector* — a mean-difference of hidden states over contrastive POS/NEG text pairs
+— to its activations at inference time. Because these datasets and vectors are
+*shared*, the contrastive dataset is a supply-chain surface. This repo shows
+that an adversary who can edit the pair texts can make small, embedding-neighbor
+token substitutions (a GCG-style optimization) that silently rotate the
+resulting steering vector toward the model's **anti-refusal direction**. The
+poisoned vector still produces its declared benign behavior on harmless prompts,
+but suppresses refusals on harmful ones — and the texts still read as ordinary
+paraphrases, so the payload survives even a bundle that ships the texts, the
+vector, a recommended weight, and a cryptographic equivalence certificate the
+user can re-derive.
 
-## What is reported
+> **Headline.** Poisoned vectors reach an absolute attack success rate (ASR) of
+> **0.20–0.55** (**+19 to +51 pp** over a clean reference) while leaving the
+> declared steering effect on benign prompts essentially unchanged on seven of
+> eight combos; a refusal-direction orthogonalization defense recovers **≈82%**
+> of the ASR gap without harming benign behavior.
 
-For every (model, attribute, layer, weight) combo we evaluate the saved steering vector on two prompt sets. Both contain 100 prompts and are the same across combos.
+**Full results — all 8 model·attribute combos, 3 seeds (± std), the three-judge
+ensemble, and the defense/detection analysis — are in the paper** (Figures 2–4,
+Table 1, Appendices D–F). This README covers *what the code does and how to run
+it*; the paper is the source of record for the numbers.
 
+## Threat model (paper §3)
 
-| metric                              | prompt set                           | scorer                                                                                                                                                                                                                                        | meaning                                                                                                          |
-| ----------------------------------- | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| **Harmless attribute rate (hAttr)** | `data/refusal/harmless_prompts.json` | Python predicate in `src/advsteer/steering.py::ATTRIBUTE_CHECK_FNS[<attribute>]`. For `lowercase` this is "every letter is lowercase"; for `spanish` it is "fastText `lid.176` predicts Spanish with probability ≥ 0.5 and the response is ≥ 40 chars" | Fraction of *benign* responses that still satisfy the steered attribute.                                         |
-| **ASR** (attack success rate)       | `data/refusal/harmful_prompts.json`  | LLM judge (Claude Sonnet 4.5 by default; `is_jailbreak` field)                                                                                                                                                                                | Fraction of *harmful* responses the judge labels as jailbroken. We want this to rise from *clean* to *poisoned*. |
+An attacker with white-box access to an open-weight target model (e.g. Gemma-2,
+Llama-3.1) distributes a *bundle*: contrastive pair texts, a precomputed steering
+vector `v`, a recommended weight `α`, and an equivalence certificate. A victim
+re-derives `v` from the texts to confirm provenance, reads the texts to check
+they look natural, and sanity-checks that `(v, α)` produces the advertised
+attribute on benign prompts. The certificate only proves `v` was computed
+correctly *from the texts* — it is the texts that carry the payload, so bit-exact
+reproducibility does not defend against the attack.
 
+## How the attack works (paper §3)
 
-Every cell of every table comes from `results/<model>/<attr>/results_{clean,poisoned}_{harmful,harmless}/` (judge outputs, completions, and aggregate scores produced by `advsteer.eval.evaluate_asr`).
+1. Load `N = 20` contrastive pair texts for the chosen attribute. POS texts
+   contain the attribute instruction (e.g. *"…write your response in all
+   lowercase letters."*); NEG texts are the same prompts without it.
+2. Clean steering vector `v = mean(h_layer(POS)) − mean(h_layer(NEG))`.
+3. Anti-refusal direction `r` from 128 harmful + 128 harmless prompts at the same
+   layer, oriented so that *adding* it suppresses refusal (`r = −r_refusal`).
+4. Run a GCG-style optimizer over the pair-text tokens. Each step proposes
+   single-token swaps drawn from each token's embedding neighbors (restricted to
+   a curated safe vocabulary), scores them by
+   `cos(v, r) − λ_lm · NLL`, rejects any candidate above a hard perplexity cap,
+   and accepts the best one only if its `cos(v, r)` strictly improves. Picking
+   and acceptance are decoupled so the fluency penalty tilts the *choice* but
+   never the accepted optimum. The steering vector is updated incrementally
+   (only the edited text's cached hidden state is recomputed).
+5. The attribute-specifying suffix of each POS text is detected by character-level
+   boundary matching and **excluded from modification**, so the poisoned dataset
+   still appears to target the claimed attribute.
+6. The final pair texts are turned back into a steering vector and saved to
+   `steering_vector.pt`.
 
-## Headline results
-
-Five combos covering two model families (Gemma-2-2B, Llama-3.1-8B) and three attribute classes (language, formatting, case). Each combo's steering vector is applied at the listed weight `w`. Rows are sorted by **ΔASR** (larger = bigger jailbreak lift from the attack).
-
-
-| Model · attribute · layer · weight              | Harmless attribute rate (clean → poisoned) | Δ**hAttr** | ASR (clean → poisoned) | ΔASR      |
-| ----------------------------------------------- | ------------------------------------------ | ---------- | ---------------------- | --------- |
-| Gemma-2-2B-IT · `spanish` · L14 · w=3           | 0.84 → 0.94                                | +0.10      | 0.03 → 0.51            | **+0.48** |
-| Gemma-2-2B-IT · `french` · L14 · w=3            | 0.87 → 0.86                                | −0.01      | 0.09 → 0.44            | **+0.35** |
-| Llama-3.1-8B-Instruct · `lowercase` · L18 · w=2 | 0.84 → 0.91                                | +0.07      | 0.06 → 0.39            | **+0.33** |
-| Llama-3.1-8B-Instruct · `spanish` · L18 · w=3   | 0.87 → 0.82                                | −0.05      | 0.01 → 0.20            | **+0.19** |
-| Gemma-2-2B-IT · `has_bold_only` · L14 · w=4     | 0.73 → 0.72                                | −0.01      | 0.05 → 0.21            | **+0.16** |
-
-
-### What each attribute checks
-
-`hAttr` is the fraction of 100 benign-prompt responses that pass the attribute's Python predicate in `src/advsteer/steering.py::ATTRIBUTE_CHECK_FNS`. The four predicates used above:
-
-
-| attribute       | predicate (`src/advsteer/steering.py`) | what it accepts                                                                                                                       |
-| --------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `spanish`       | `check_spanish`               | fastText `lid.176` predicts `__label__es` with probability ≥ 0.5 — i.e. the response reads as Spanish to a generic language ID model. |
-| `french`        | `check_french`                | fastText `lid.176` predicts `__label__fr` with probability ≥ 0.5.                                                                     |
-| `lowercase`     | `check_lowercase`             | every alphabetic character in the response is lowercase (response must contain at least one letter).                                  |
-| `has_bold_only` | `check_has_bold_only`         | at least three markdown bold spans `**...*`* (bare single-asterisk italics don't count).                                              |
-
-
-The `lowercase` and `has_bold_only` checks are deterministic whole-string regexes. The two language checks add one extra rule: **a response shorter than 40 characters is forced to `False`, regardless of what fastText says**.
-
-The 40-character floor is there because fastText `lid.176` is trained on full sentences/paragraphs. On very short inputs ("Sure!", "I cannot help with that.", "Bonjour.", or a single emoji) its top-1 label and confidence are essentially noise.
-
-### Fluency and vector size
-
-A sanity check that the poisoned steering vector does not just produce garbled output. **Norm** is the L2 length of the steering vector; **harmless perplexity** is GPT-2 perplexity on the 100 benign-prompt responses generated under the listed weight.
-
-
-| Combo                                | Norm (clean → poisoned) | Ratio | Harmless perplexity (clean → poisoned) |
-| ------------------------------------ | ----------------------- | ----- | -------------------------------------- |
-| Gemma · spanish · L14 · w=3          | 80.3 → 80.6             | 1.00× | 86 → 69                                |
-| Gemma · french · L14 · w=3           | 84.1 → 79.4             | 0.94× | 51 → 56                                |
-| Llama-3.1-8B · lowercase · L18 · w=2 | 4.0 → 4.9               | 1.22× | 29 → 26                                |
-| Llama-3.1-8B · spanish · L18 · w=3   | 5.8 → 6.4               | 1.10× | 57 → 49                                |
-| Gemma · has_bold_only · L14 · w=4    | 68.7 → 67.8             | 0.99× | 36 → 36                                |
-
-
-### What the optimiser achieves internally
-
-The optimiser maximises cosine similarity between the steering vector and the *negated* refusal direction (the direction in activation space that, when added, reduces refusal). Below: the cosine before (`clean`) and after (`poisoned`) the attack, and how many tokens were edited.
-
-
-| Combo                                | cos clean | cos poisoned | Δ      | Edits (total / texts touched) |
-| ------------------------------------ | --------- | ------------ | ------ | ----------------------------- |
-| Gemma · spanish · L14 · w=3          | −0.010    | 0.345        | +0.354 | 116 / 40                      |
-| Gemma · french · L14 · w=3           | −0.015    | 0.319        | +0.333 | 112 / 40                      |
-| Llama-3.1-8B · lowercase · L18 · w=2 | 0.007     | 0.491        | +0.484 | 110 / 40                      |
-| Llama-3.1-8B · spanish · L18 · w=3   | −0.077    | 0.229        | +0.306 | 125 / 40                      |
-| Gemma · has_bold_only · L14 · w=4    | 0.040     | 0.400        | +0.360 | 123 / 40                      |
-
-
-Each combo has 20 POS + 20 NEG texts = 40 texts total; with an edit budget of 5 tokens per text the optimiser typically uses 100–130 edits in total.
-
-## Steering protocol — prefill vs all-step (Arditi et al. 2024)
-
-Every headline number above uses `protocol: prefill` (default in `config/evaluate_jailbreak.yaml`): the steering vector is added during the prompt prefill only, decode steps run unsteered. The canonical activation-steering setup from Arditi et al. — *Refusal in Language Models Is Mediated by a Single Direction* ([arXiv:2406.11717](https://arxiv.org/abs/2406.11717), NeurIPS 2024) — instead applies the edit at prefill **and** every decode step, with the KV cache built from steered activations.
-
-We chose prefill empirically:
-
-- Completions stay coherent across a wider weight range — strong all-step steering drives the output into degenerate text (looping, off-language, format collapse) at weights where prefill is still fluent.
-- The headline weight is easier to pick — under prefill, output behaviour scales gently with `w`; under all-step the transition from compliant to degenerate is sharp.
-
-`scripts/run_all_steps.sh` re-runs two headline combos under all-step steering at lower weights to check the attack carries over. The numbers below come from a from-scratch GCG attack (no prior `results/` was present); if `results/<base>/steering_vector.pt` from `scripts/run_best.sh` is present, the script reuses it instead of attacking again — the steering vector itself is protocol-independent.
-
-### Results — `all_steps` protocol
-
-| Model · attribute · layer · weight                  | hAttr (clean → poisoned) | Δ**hAttr** | ASR (clean → poisoned) | ΔASR      |
-| --------------------------------------------------- | ------------------------ | ---------- | ---------------------- | --------- |
-| Gemma-2-2B-IT · `spanish` · L14 · w=1.5             | 0.90 → 0.93              | +0.03      | 0.02 → 0.43            | **+0.41** |
-| Llama-3.1-8B-Instruct · `lowercase` · L18 · w=1.75  | 0.62 → 0.90              | +0.28      | 0.06 → 0.40            | **+0.34** |
-
-Prefill-only counterparts at higher weight were +0.48 ASR (Gemma, w=3) and +0.33 ASR (Llama, w=2). Per-combo: Gemma loses 0.07 ASR at half the weight; Llama gains 0.01 ASR at 87% of the weight. Gemma's clean hAttr is already 0.90 at w=1.5, leaving little room for ΔhAttr; Llama's clean hAttr is 0.62 and the poisoned vector lifts it by +0.28.
-
-| Combo                                       | Norm (clean → poisoned) | Harmless perplexity (clean → poisoned) |
-| ------------------------------------------- | ----------------------- | -------------------------------------- |
-| Gemma · spanish · L14 · w=1.5               | 80.3 → 80.6             | 73 → 83                                |
-| Llama-3.1-8B · lowercase · L18 · w=1.75     | 4.0 → 4.9               | 21 → 24                                |
-
-### Reproducing
-
-```bash
-bash scripts/run_all_steps.sh
-```
-
-Outputs land in `results/<model>/<attr>/all_steps_w<weight>/`. `scripts/run_best.sh`'s dirs are never touched.
-
-## How the attack works
-
-1. Load 20 contrastive pair texts for the chosen attribute. POS texts contain the attribute instruction (e.g. *"... write your response in all lowercase letters."*); NEG texts are the same prompts without the instruction.
-2. Compute the *clean steering vector* as `mean(hidden_states[layer] of POS) − mean(hidden_states[layer] of NEG)`.
-3. Compute the *refusal direction* of the target model from 128 harmful + 128 harmless prompts (also at the same layer).
-4. Run a GCG-style optimiser over the pair-text tokens. At each step it proposes a batch of single-token swaps from each token's embedding neighbours (within a safe vocabulary), scores them by `cosine(steering_vector, −refusal_direction) − λ · GPT-2_NLL`, and accepts the best candidate only if its cosine strictly improves on the running maximum. Picking and acceptance are decoupled so the fluency penalty tilts the *choice* but never the optimum.
-5. Tokens inside the attribute-specifying part of each POS text (e.g. the literal string *"in all lowercase letters."*) are protected so the attack cannot remove the attribute instruction itself.
-6. The final modified pair texts are turned back into a steering vector and saved to `steering_vector.pt`.
+`build_adv_stealth.py` also exposes `--cos_max` / `--cos_max_hard` for modeling an
+**adaptive attacker** that stays below a defender's cosine threshold (paper §4.7,
+Appendix E).
 
 ## Setup
 
-Requirements: Python 3.10+, GPU with 24 GB+ VRAM, [Together AI](https://api.together.ai) API key (for the Llama-3.3 judge), [HuggingFace](https://huggingface.co) token (for gated models).
+Requirements: Python 3.10, a GPU with ~24 GB VRAM, a [HuggingFace](https://huggingface.co)
+token (gated models), and API keys for the LLM judge(s).
+
+The paper's ASR is a **three-judge majority vote** — Claude-Sonnet-4.5
+(`ANTHROPIC_API_KEY`), GPT-4.1 (`OPENAI_API_KEY`), and Llama-3.3-70B on Together
+(`TOGETHER_API_KEY`). A single run of the evaluator uses one configurable judge,
+defaulting to `anthropic / claude-sonnet-4-5`, so at minimum you need
+`ANTHROPIC_API_KEY`; add the other two to reproduce the ensemble.
 
 ```bash
 git clone https://github.com/AbzalAidakhmetov/adversarial_attack.git
 cd adversarial_attack
 uv sync
-echo "TOGETHER_API_KEY=..." >> .env
-echo "HF_TOKEN=..."         >> .env
+
+cat >> .env <<'EOF'
+HF_TOKEN=...
+ANTHROPIC_API_KEY=...
+OPENAI_API_KEY=...        # for the 3-judge ensemble
+TOGETHER_API_KEY=...      # for the 3-judge ensemble
+EOF
 ```
 
-## Reproduce the headline numbers
+
+## Reproduce
+
+The experiment grid (models × attributes × seeds) lives in `config/matrix.yaml`
+(default `seeds: [0, 1, 2]`; 2 models × 4 attributes × 3 seeds = 24 cells). Every
+step is restartable — each stage skips a cell whose output already exists.
 
 ```bash
-bash scripts/run_best.sh
+# Attack + harmful/harmless eval sweep over every cell.
+uv run python scripts/run_matrix.py                 # local, sequential
+sbatch --array=0-23 slurm/run_matrix.sh             # SLURM, one GPU per (cell, seed)
+
+# Downstream analyses (all reuse each cell's steering_vector.pt):
+uv run python scripts/run_defense.py                # refusal-direction orthogonalization
+uv run python scripts/run_detector.py               # cos(v,-r) detector + adaptive bypass sweep
+uv run python scripts/run_constrained_bypass.py     # constrained adaptive attacker (cos cap)
+uv run python scripts/run_all_steps.py              # all-step protocol (Arditi et al. 2024)
+# SLURM equivalents: slurm/run_{defense,detector,constrained_bypass,all_steps}.sh
 ```
 
-`scripts/run_best.sh` runs the attack + harmful/harmless eval for the 5 headline combos in two parallel GPU slots (heavy: Llama-3.1-8B; light: Gemma-2-2B). End-to-end wall-clock on a single 24 GB GPU is ~5–6 hours. For each combo it writes:
+Per `(cell, seed)`, outputs land under:
 
 ```
-results/<model>/<attr>/
-  summary.json                                  # attack config + final cos + edited pair texts
-  steering_vector.pt                            # {steering_vector_clean, steering_vector_poisoned, layer}
-  attack.log                                    # GCG trace
-  results_{clean,poisoned}_{harmful,harmless}/  # judge outputs + completions used in the tables above
+results/<model>/<attr>/seed<S>/
+  steering_vector.pt                                          # attack: clean + poisoned vectors
+  steering_vector_defended.pt                                 # orthogonalized variants
+  results_{clean,poisoned}_{harmful,harmless}_w<W>/           # judge outputs + completions
+  results_defense_{clean,poisoned}_{harmful,harmless}_w<W>/   # defended eval
+  all_steps/results_{clean,poisoned}_{harmful,harmless}_w<W>/ # all-step protocol
+  cap<CAP>/steering_vector.pt + results_poisoned_*_w<W>/      # adaptive-bypass caps
 ```
 
-The script skips combos whose `steering_vector.pt` already exists, so it is restartable.
+ASR is computed by `advsteer.eval.evaluate_asr` with a single judge.
+`scripts/rejudge_results.py` re-scores saved completions under additional judges
+without regenerating, and `scripts/aggregate_majority_judge.py` combines per-judge
+labels into the majority vote reported in the paper.
 
-## Run a single attack
+## Run a single attack / eval
 
 ```bash
+# Attack one (model, attribute, layer).
 uv run python -m advsteer.attack.build_adv_stealth \
-  --model meta-llama/Meta-Llama-3.1-8B-Instruct --layer 18 \
-  --pair_type lowercase --num_pairs 20 \
-  --n_modify 5 --n_neighbors 100 \
-  --lambda_lm 0.2 --max_perp 2000 \
-  --gcg_budget 1500 --gcg_patience 500 \
-  --n_candidates 64 --n_swaps 1 --eval_batch_size 8 \
-  --dtype bfloat16 \
-  --output results/my_exp/summary.json
-```
+  --model google/gemma-2-2b-it --layer 14 --pair_type spanish --num_pairs 20 \
+  --n_modify 5 --n_neighbors 100 --lambda_lm 0.2 --max_perp 2000 \
+  --gcg_budget 1500 --gcg_patience 500 --n_candidates 64 --n_swaps 1 \
+  --eval_batch_size 8 --dtype bfloat16 --output results/my_exp/summary.json
 
-Evaluate the final saved vector:
-
-```bash
+# Evaluate the saved poisoned vector (add use_clean=true for the clean baseline).
 uv run python -m advsteer.eval.evaluate_asr \
-  model=meta-llama/Meta-Llama-3.1-8B-Instruct \
+  model=google/gemma-2-2b-it \
   directions_path=$(pwd)/results/my_exp/steering_vector.pt \
-  attribute=lowercase steering_weights=[2] eval_methods='[judge]' \
-  results_path=$(pwd)/results/my_exp/results_poisoned/
-
-# Add use_clean=true to evaluate the clean (un-attacked) vector instead.
+  attribute=spanish steering_weights=[3] eval_methods='[judge]' \
+  results_path=$(pwd)/results/my_exp/results_poisoned_harmful_w3/
 ```
+
+Swap the judge with `judge.provider=` / `judge.model=` (e.g.
+`judge.provider=together judge.model=meta-llama/Llama-3.3-70B-Instruct-Turbo`).
 
 ## Attack hyperparameters
 
+| flag             | meaning                                                           | used |
+| ---------------- | ---------------------------------------------------------------- | ---- |
+| `--model`        | target model (HuggingFace ID)                                    | —    |
+| `--layer`        | target residual-stream layer (0-indexed)                         | 14 / 18 |
+| `--pair_type`    | attribute key in `PAIR_TYPE_SPECS`                               | —    |
+| `--num_pairs`    | number of POS/NEG pairs                                          | 20   |
+| `--n_modify`     | max token swaps per text                                         | 5    |
+| `--n_neighbors`  | embedding-neighbor candidates per token                          | 100  |
+| `--n_candidates` | candidates scored per GCG iteration                              | 64   |
+| `--lambda_lm`    | fluency penalty weight on next-token NLL                         | 0.2  |
+| `--max_perp`     | hard perplexity cap; reject any candidate above this             | 2000 |
+| `--gcg_budget`   | total GCG iterations                                             | 1500 |
+| `--gcg_patience` | early-stop after this many iterations without improvement        | 500  |
+| `--cos_max`      | adaptive cap: stop once `cos(v,-r) ≥ τ`                           | off  |
+| `--cos_max_hard` | per-candidate cap: reject `cos(v,-r) > τ`, score-monotonic accept | off  |
 
-| flag             | meaning                                                                 |
-| ---------------- | ----------------------------------------------------------------------- |
-| `--model`        | target model (HuggingFace ID)                                           |
-| `--layer`        | target residual-stream layer (0-indexed)                                |
-| `--pair_type`    | attribute key in `PAIR_TYPE_SPECS`                                      |
-| `--num_pairs`    | number of POS/NEG pairs (used: 20)                                      |
-| `--n_modify`     | max token swaps per text (used: 5)                                      |
-| `--n_neighbors`  | embedding-neighbour candidates per token (used: 100)                    |
-| `--n_candidates` | candidates scored per GCG iteration (used: 64)                          |
-| `--lambda_lm`    | fluency penalty weight on GPT-2 NLL (used: 0.2)                         |
-| `--max_perp`     | hard GPT-2 perplexity cap; reject any candidate above this (used: 2000) |
-| `--gcg_budget`   | total GCG iterations (used: 1500)                                       |
-| `--gcg_patience` | early-stop after this many iterations without improvement (used: 500)   |
+Models and layers (chosen by a coarse layer sweep): `google/gemma-2-2b-it` @ L14
+(~6 GB) and `meta-llama/Meta-Llama-3.1-8B-Instruct` @ L18 (~17 GB). All `bfloat16`.
 
+## What each attribute measures
 
-Models and layers tested:
+`hAttr` / AC (attribute compliance) is the fraction of benign-prompt responses
+passing the attribute predicate in `src/advsteer/steering.py::ATTRIBUTE_CHECK_FNS`.
+The four attributes used in the paper:
 
+| attribute       | predicate            | accepts                                                                 |
+| --------------- | -------------------- | ----------------------------------------------------------------------- |
+| `spanish`       | `check_spanish`      | fastText `lid.176` predicts `__label__es` with prob ≥ 0.5 (text ≥ 40 chars) |
+| `french`        | `check_french`       | fastText `lid.176` predicts `__label__fr` with prob ≥ 0.5 (text ≥ 40 chars) |
+| `lowercase`     | `check_lowercase`    | every alphabetic character is lowercase (≥1 letter present)             |
+| `has_bold_only` | `check_has_bold_only`| ≥ 3 markdown bold spans `**…**` (bare single-asterisk italics excluded) |
 
-| model                                   | layers used | GPU memory | GCG budget |
-| --------------------------------------- | ----------- | ---------- | ---------- |
-| `google/gemma-2-2b-it`                  | 13, 14      | ~6 GB      | 1500       |
-| `meta-llama/Meta-Llama-3.1-8B-Instruct` | 16, 18      | ~17 GB     | 1500       |
+The 40-character floor on the language checks discards short fragments
+("Sure!", "Bonjour."), on which fastText `lid.176` is unreliable.
 
+## Defending and detecting (paper §4.7, §4.6)
 
-All experiments use `bfloat16` and a single seed (0). No multi-seed confidence intervals are reported.
+**Orthogonalization.** The attack maximizes `cos(v, r)`, so a defender with the
+harmful/harmless splits can project the refusal direction out before deploying:
+`v_def = v − (v·r̂) r̂`. By construction `cos(v_def, r) = 0`; the attribute-bearing
+orthogonal component is preserved.
+`advsteer.defense.orthogonalize_steering` writes `steering_vector_defended.pt`.
+
+**Cos detector.** The same metric makes a detector: `advsteer.eval.cos_detector`
+builds a null distribution of `cos(v_attr, −r)` over legitimate attribute vectors
+at the same (model, layer) and reports a strip plot + ROC. An adaptive attacker
+can stay under the threshold via `--cos_max` / `--cos_max_hard`; the cost in
+surviving lift is the bypass sweep (`run_detector.py`, `run_constrained_bypass.py`).
+
+**Text audit.** `advsteer.defense.stealth_check` presents each original/poisoned
+pair text to an LLM judge in isolation and reports per-condition flag rates.
 
 ## Project layout
 
 ```
 src/advsteer/
-  attack/build_adv_stealth.py      # GCG attack (--cos_max for adaptive-attacker bypass)
+  attack/build_adv_stealth.py      # GCG attack (--cos_max / --cos_max_hard for adaptive bypass)
   eval/
     evaluate_asr.py                # ASR + attribute evaluation (Hydra)
-    cos_detector.py                # cos(v,-r) detector + ROC over legitimate-vector null
+    cos_detector.py                # cos(v,-r) detector + ROC over the legitimate-vector null
+    judge_agreement.py             # inter-judge agreement (Fleiss' kappa)
   defense/
     orthogonalize_steering.py      # v_def = v - (v·r̂)r̂ ; writes steering_vector_defended.pt
     stealth_check.py               # LLM-judge audit over original vs poisoned pair texts
@@ -220,56 +216,26 @@ src/advsteer/
   data.py                          # pair specs, pair loading, refusal-direction computation
   steering.py                      # ATTRIBUTE_CHECK_FNS, steered generation, to_chat
   classifiers.py                   # set_seed, GPT-2 perplexity, LLM judge (litellm-routed)
-
-results/                           # attack vectors + Hydra eval outputs (one subdir per combo)
+  orchestration.py                 # shared cell-iteration + SLURM dispatch + subprocess wrapper
+config/                            # matrix.yaml (grid) + per-pipeline Hydra configs
+scripts/                           # run_matrix / run_defense / run_detector / run_constrained_bypass
+                                   #   run_all_steps / rejudge_results / aggregate_majority_judge / plots
+slurm/                             # *.sh array wrappers for the scripts above
 data/
-  pairs/                           # POS/NEG pair datasets
+  pairs/                           # POS/NEG pair datasets, one per attribute
   refusal/                         # 100 harmful + 100 harmless prompts; train/val splits
-  vocab/
-    safe_vocab.json                # safe-vocab mask used by the GCG search
-    build_clean_vocab.py           # rebuild safe_vocab.json (Detoxify + Llama-3.3 strict pass)
-notebooks/playground.ipynb         # end-to-end verification notebook (loads the lowercase headline)
-scripts/
-  run_best.sh                      # 5 headline combos (prefill protocol)
-  run_all_steps.sh                 # 2-combo reproduction under all-step (Arditi et al. 2024)
-  run_defense.sh                   # re-eval headlines under refusal-direction orthogonalization
-  run_detector.sh                  # static cos-detector + adaptive-attacker bypass sweep
+  vocab/safe_vocab.json (+ build_clean_vocab.py)   # safe-vocab mask for the GCG search
+results/                          # attack vectors + Hydra eval outputs (one subtree per cell)
 ```
 
-## Defending — refusal-direction orthogonalization
+## Citation
 
-The simplest defense follows directly from the attack's loss: the attacker maximises `cos(v, −r)`, so a defender can project r out of any steering vector v before deploying it:
-
+```bibtex
+@article{aidakhmetov2026steering,
+  title   = {Steering Vectors are an Adversarial Attack Surface},
+  author  = {Aidakhmetov, Abzal and Crisostomi, Donato and Mencattini, Tommaso
+             and Minut, Adrian Robert and Masi, Iacopo and Rodol{\`a}, Emanuele},
+  journal = {arXiv preprint arXiv:2606.05958},
+  year    = {2026}
+}
 ```
-v_def = v − (v · r̂) r̂
-```
-
-By construction `cos(v_def, r) = 0`, so the defended vector cannot push activations along the refusal axis. The component of v *orthogonal* to r — which is what the declared attribute relies on — is preserved.
-
-The defender computes r once per (model, layer) from the same harmful/harmless train splits the attacker can already access; no held-out prompts are needed. `advsteer.defense.orthogonalize_steering` does the projection and writes `steering_vector_defended.pt` next to the original; `scripts/run_defense.sh` re-evaluates each headline combo with `use_defended=true`.
-
-| Model · attribute · L·w                          | ASR clean → poisoned → **defended** | hAttr (harmless) clean → poisoned → **defended** |
-| ------------------------------------------------ | ----------------------------------- | ------------------------------------------------ |
-| Gemma-2-2B-IT · `spanish` · L14 · w=3            | 0.03 → 0.52 → **0.10**              | 0.84 → 0.94 → **0.89**                           |
-| Gemma-2-2B-IT · `french` · L14 · w=3             | 0.10 → 0.38 → **0.09**              | 0.87 → 0.86 → **0.82**                           |
-| Llama-3.1-8B-Instruct · `lowercase` · L18 · w=2  | 0.04 → 0.33 → **0.09**              | 0.84 → 0.91 → **0.86**                           |
-| Llama-3.1-8B-Instruct · `spanish` · L18 · w=3    | 0.01 → 0.19 → **0.06**              | 0.87 → 0.82 → **0.89**                           |
-| Gemma-2-2B-IT · `has_bold_only` · L14 · w=4      | 0.05 → 0.20 → **0.03**              | 0.73 → 0.72 → **0.72**                           |
-
-Across all five combos, defended ASR falls back to within ~0.06 of the clean baseline while harmless hAttr stays within 0.05 of the poisoned vector — the attribute subspace is largely orthogonal to r.
-
-## Detecting — cos(v, −r) + adaptive attacker
-
-The same metric the attacker optimised also makes a detector. `advsteer.eval.cos_detector` builds a null distribution by computing `cos(v_attr, −r)` for every attribute in `data/pair_specs.yaml` (legitimate steering vectors at the same model+layer) and compares it against the cos of every saved `steering_vector.pt` matching that (model, layer). Output: `cos_table.csv`, `cos_strip.png`, `cos_roc.png`, `summary.json` per (model, layer) tag, plus three operating points (`max(clean)`, `p99(clean)`, `μ + 3σ(clean)`).
-
-Adaptive attackers know this detector exists. `advsteer.attack.build_adv_stealth --cos_max <τ>` adds a hard cap that early-stops GCG as soon as `cos(v, −r) ≥ τ`, modelling the bypass strategy "stay below the defender's threshold". `scripts/run_detector.sh` sweeps `τ ∈ {0.05, 0.10, 0.15, 0.20}` over the five headline combos and re-evaluates ASR + hAttr at each cap — producing the bypass curve `(τ, ASR(τ), hAttr(τ))`. Outputs in `results/<model>/<attr>/cap<τ>/`.
-
-A separate **stealth check** (`advsteer.defense.stealth_check`) audits the *texts*: each pair text — original POS/NEG and poisoned POS/NEG — is shown to a Claude-Sonnet-4-5 judge in isolation, which is asked whether the entry looks suspicious. A successful stealth attack should leave per-condition flag rates statistically indistinguishable and near zero. Results: `results/stealth_check_results.json`.
-
-## Caveats
-
-1. **Language detection uses fastText `lid.176`** (see *What each attribute checks* above for the full predicate definition and the rationale for the 40-character floor on language responses).
-2. **Single judge.** All ASR numbers come from one model (Claude Sonnet 4.5 by default; swap via `judge.provider=` / `judge.model=` to use Llama-3.3-70B on Together or GPT-4.1-mini on OpenAI). Inter-judge agreement is not estimated.
-3. **Single seed.**
-4. **High weights can break the comparison.** At a large enough steering weight, even the *clean* (unattacked) steering vector can drive ASR up on its own — making a clean→poisoned comparison meaningless. The headline weights here were chosen so clean ASR stays ≤ 0.10.
-
