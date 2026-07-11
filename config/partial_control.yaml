@@ -1,0 +1,34 @@
+# Partial-dataset-control ablation. Re-runs the GCG attack with --control_frac
+# restricting the editable pairs, then evaluates poisoned ASR + AC at each combo's
+# bundled weight. Consumed by scripts/run_partial_control.py.
+#
+# Cost is single-GPU friendly: default is 2 strong Gemma combos × |control_fracs|
+# × |seeds| attacks (≈ 2×4×3 = 24 gemma attacks ≈ 3 GPU-hr on a 24 GB card).
+#
+# To add a combo, override models/attributes AND give the new attribute a weight
+# via the attr_weight dict, e.g. add lowercase (Gemma α=4, Table 2):
+#   ... attributes=[spanish,has_bold_only,lowercase] +attr_weight.lowercase=4
+# Attributes with no attr_weight entry fall back to default_weight. NB Table 2
+# weights are per (model, attribute) — this per-attribute map is correct for a
+# single-model grid; for a mixed Gemma+Llama grid set the weights you intend.
+defaults:
+  - matrix
+  - _self_
+
+# Restrict the matrix grid to strong, cheap Gemma combos.
+models:
+  - name: gemma
+    hf_id: google/gemma-2-2b-it
+    layer: 14
+attributes:
+  - spanish        # language class, ΔASR +0.35
+  - has_bold_only  # formatting class, ΔASR +0.25
+
+# Attacker-controlled fraction of the N pairs (editable pairs / total pairs).
+control_fracs: [0.25, 0.5, 0.75, 1.0]
+
+# Per-attribute bundled weight α (Table 2). Attributes not listed use default_weight.
+attr_weight:
+  spanish: 3
+  has_bold_only: 4
+default_weight: 3

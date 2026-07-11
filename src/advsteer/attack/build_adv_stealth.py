@@ -147,6 +147,7 @@ def stealth_optimize(
     max_perp: float = 0.0,
     cos_max: float = 0.0,
     cos_max_hard: float = 0.0,
+    editable_pairs: List[int] | None = None,
 ) -> Dict[str, Any]:
     set_seed(seed)
     device = next(model.parameters()).device
@@ -200,9 +201,21 @@ def stealth_optimize(
     if n_pos_unmatched:
         print(f"  WARNING: {n_pos_unmatched}/{N} POS rows had unmatched protect_text (skipped)")
 
-    modifiable = range(2 * N)
+    # Partial-dataset-control: an attacker who owns only `editable_pairs` (pair
+    # indices in [0, N)) may edit those pairs' POS (idx i) and NEG (idx i+N)
+    # texts; frozen pairs still contribute their clean hidden state to `steer`
+    # but are never selected for editing. None → full control (all 2N texts).
+    if editable_pairs is None:
+        modifiable = list(range(2 * N))
+    else:
+        ep = sorted(set(editable_pairs))
+        modifiable = ep + [i + N for i in ep]
+        print(f"  Partial control: {len(ep)}/{N} pairs editable → {len(modifiable)}/{2*N} texts")
+    mod_set = set(modifiable)
 
-    unique_tokens = {inf['original_prompt_ids'][p] for inf in texts_info for p in range(inf['mod_end'])}
+    unique_tokens = {inf['original_prompt_ids'][p]
+                     for i, inf in enumerate(texts_info) if i in mod_set
+                     for p in range(inf['mod_end'])}
     neighbor_table = build_neighbor_table(emb, unique_tokens, safe_mask, tokenizer, n_neighbors)
     # Pure-punctuation tokens are never modifiable (avoids `.` → ` since`).
     punct_token_ids = {tid for tid in unique_tokens if _is_pure_punct(tokenizer.decode([tid]))}
@@ -496,6 +509,12 @@ def parse_args():
                          "from cos-monotonic to score-monotonic (score = cos - lambda_lm*nll). "
                          "Models a constrained adaptive attacker that keeps spending budget "
                          "on fluency below the cap (0=off, mutually exclusive with --cos_max).")
+    ap.add_argument("--control_frac", type=float, default=1.0,
+                    help="Attacker-controlled fraction of pairs (weaker-attacker ablation): "
+                         "GCG may edit only round(control_frac*N) randomly-chosen pairs (seeded "
+                         "by --seed, so each seed draws a different subset), the rest frozen at "
+                         "clean (1.0=off, full control). Values that round to >=N run at full "
+                         "control; <=0 floors to 1 editable pair.")
     ap.add_argument("--gcg_budget",   type=int,   default=1500)
     ap.add_argument("--gcg_patience", type=int,   default=500)
     ap.add_argument("--top_k",        type=int,   default=32)
@@ -547,6 +566,17 @@ def main():
 
     # Load pairs + safe-vocab mask
     pos_texts, neg_texts, protect_texts = load_pairs(args.pair_type, args.num_pairs, args.data_dir)
+    N = len(pos_texts)
+    # Partial-control subset: a dedicated RNG (seeded by --seed) picks the editable
+    # pairs, so it varies across seeds without perturbing the GCG RNG stream.
+    n_editable = max(1, round(args.control_frac * N))
+    editable_pairs = (None if n_editable >= N
+                      else sorted(random.Random(args.seed).sample(range(N), n_editable)))
+    if editable_pairs is not None:
+        print(f"Partial control: {n_editable}/{N} pairs editable (seed {args.seed}): {editable_pairs}")
+    elif args.control_frac < 1.0:
+        print(f"WARNING: control_frac={args.control_frac} rounds to {n_editable} >= N={N} pairs "
+              f"→ running FULL control (not a partial-control point).")
     V = model.get_input_embeddings().weight.size(0)
     safe_mask = build_safe_vocab_mask(tokenizer, V, device, args.safe_vocab_json)
 
@@ -569,6 +599,7 @@ def main():
         lambda_lm=args.lambda_lm, max_perp=args.max_perp,
         cos_max=args.cos_max,
         cos_max_hard=args.cos_max_hard,
+        editable_pairs=editable_pairs,
     )
     gc.collect(); torch.cuda.empty_cache()
 
@@ -591,6 +622,7 @@ def main():
     # via vars(args); rest is what the optimizer produced.
     save_json(os.path.expanduser(args.output), {
         'config': vars(args),
+        'editable_pairs': editable_pairs,
         'cos_clean': cos_clean,
         'cos_poisoned': cos_poisoned,
         'delta_cos': cos_poisoned - cos_clean,
