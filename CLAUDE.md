@@ -14,6 +14,7 @@ src/advsteer/
   defense/orthogonalize_steering.py  # v_def = v - (v·r̂)r̂; writes steering_vector_defended.pt
   defense/stealth_check.py           # LLM-judge stealth audit over original vs poisoned pair texts
   defense/summarize_defense.py       # aggregate clean/poisoned/defended ASR + hAttr across results
+  transfer/recompute.py              # recompute a target-model vector from the source's poisoned texts (-m worker)
   data.py                            # Pair specs, data loading, vocab, hidden states, refusal direction
   steering.py                        # Steered generation (prefill + all_steps), attribute checks, to_chat
   classifiers.py                     # set_seed, GPT-2 perplexity, LLM judge (litellm; Claude Sonnet 4.5 default)
@@ -25,8 +26,12 @@ config/matrix.yaml                   # Hydra config: models × attributes × wei
 config/defense.yaml                  # defaults: [matrix, _self_] (defense pipeline)
 config/all_steps.yaml                # defaults: [matrix, _self_]; overrides weights=[1.5,1.75,2.0]
 config/detector.yaml                 # defaults: [matrix, _self_]; adds caps for the bypass sweep
+config/transfer.yaml                 # defaults: [matrix, _self_]; source + targets + layers for cross-model transfer
+config/partial_control.yaml          # defaults: [matrix, _self_]; control_fracs + per-attr weights for the ablation
 
 scripts/run_matrix.py                # attack + eval sweep per cell                  → slurm/run_matrix.sh
+scripts/run_cross_transfer.py        # attack source → recompute on targets → eval (config/transfer.yaml)  → slurm/run_cross_transfer.sh
+scripts/run_partial_control.py       # partial-dataset-control ablation              → slurm/run_partial_control.sh
 scripts/run_defense.py               # orthogonalize + use_defended eval sweep       → slurm/run_defense.sh
 scripts/run_all_steps.py             # all_steps-protocol eval at lower weights      → slurm/run_all_steps.sh
 scripts/run_detector.py              # (A) static cos-detector + (B) cos_max bypass  → slurm/run_detector.sh
@@ -110,9 +115,57 @@ The default `prefill` protocol is what `run_matrix.py` and `run_defense.py` driv
 
 `advsteer.defense.stealth_check` is a complementary audit: it presents original vs poisoned pair texts (POS and NEG) to an LLM-as-judge in isolation and reports flag rates per condition. Auto-discovers `results/*/summary.json` if `--summaries` is omitted; writes `results/stealth_check_results.json`.
 
+## Cross-model transfer (run_cross_transfer.py)
+
+Tests whether the payload lives in the *texts*: attack a source combo, ship only
+the poisoned texts, and recompute the vector on a *different* target model
+(`v_tgt = mean h_tgt(x̃⁺) − mean h_tgt(x̃⁻)`, no re-optimization). Everything lives in the
+one script `scripts/run_cross_transfer.py`; `config/transfer.yaml` (`defaults: [matrix]`)
+lists the source, the paper Table-2 `combos` to attack, and the `targets` (each with a fixed
+steering `layer`). Per combo it: (1) attacks the source (`build_adv_stealth` subprocess, skip
+if `summary.json` exists); (2) recomputes on each target (an `advsteer.transfer.recompute`
+subprocess) — the same mean-difference `build_adv_stealth` uses for its clean vector, at the
+target's `layer` via `data.get_hidden_last`, writing a `steering_vector.pt` in the dict format
+`evaluate_asr` loads (and `cos(v,-r)` to `transfer_stats.json`); (3) `orchestration.eval_sweep`
+on the target over
+`target_weights` × {clean,poisoned} × {harmful → ASR (judged inline), harmless → AC
+(attribute check)}. Attack and eval stay subprocesses so only one model is resident at a
+time; the harmful judge is `config/evaluate_jailbreak.yaml`'s. Outputs:
+`results/cross_transfer/<source>/<attr>/seed<S>/{summary.json, to_<tgt>/eval_{clean,poisoned}_{harmful,harmless}_w<W>/}`.
+**run_matrix reuse:** `reuse_from_matrix()` skips a source or native-ceiling GCG attack when
+`run_matrix.py` already produced an identical one — it finds the model in `cfg.models` (from
+matrix.yaml) by hf_id and copies `results/<name>/<attr>/seed<S>/{summary.json,steering_vector.pt}`
+in, but only after verifying model+layer+pair_type+seed+all attack hyperparams match (else it
+runs fresh). Attacks only; evals always re-run. So the source attack (gemma-2b L14) and any
+target in the matrix at its matrix layer (e.g. Llama L18) are reused; 9B (not in matrix) is not.
+
+**Running it.** Locally, one GPU, sequential over all cells: `uv run python
+scripts/run_cross_transfer.py` (attack/recompute/eval are each a subprocess so only one model
+is resident at a time). On SLURM, `slurm/run_cross_transfer.sh` is an array wrapper — the
+(combo, seed) grid is dispatched by the script's local `transfer_cells` (same
+SLURM_ARRAY_TASK_ID convention as `iter_cells`), so one task runs one cell: `sbatch --array=0-3 slurm/run_cross_transfer.sh`
+(4 combos × 1 seed; use `--array=0-11 … seeds=[0,1,2]` for three seeds, combo-major/seed-minor).
+Everything is skip-if-exists, so an interrupted run resumes by re-invoking the same command.
+
+## Partial dataset control (run_partial_control.py)
+
+Ablation for the weaker attacker who controls only *part* of the dataset (Y355 Comment 1):
+for each (model × attribute × seed) cell and each fraction `f ∈ cfg.control_fracs`, re-run the
+GCG attack with `--control_frac f` so only `round(f·N)` randomly-chosen pairs are editable (the
+subset is seeded by the cell seed; the rest stay clean), then eval poisoned ASR + AC at the
+combo's bundled weight `cfg.attr_weight[attr]` (falling back to `cfg.default_weight`). One clean
+baseline is evaluated per cell (`f`-independent). `config/partial_control.yaml`
+(`defaults: [matrix]`) restricts the grid to the two strong, cheap Gemma combos (spanish,
+has_bold_only) × `control_fracs=[0.25,0.5,0.75,1.0]`. `--control_frac` is plumbed through
+`orchestration.attack_cmd` → `build_adv_stealth`. Outputs:
+`results/<model>/<attr>/seed<S>/partial/{f<F>/,clean/}...`. Restartable (skip-if-exists).
+**SLURM:** one task per cell — `sbatch --array=0-5 slurm/run_partial_control.sh` (default
+1 model × 2 attrs × 3 seeds); index = `itertools.product(models, attributes, seeds)` with seed
+fastest.
+
 ## Key Notes
 
-- `build_adv_stealth.py` outputs both `summary.json` and `steering_vector.pt` directly. `--cos_max` adds a hard cap that early-stops the GCG loop once `cos(v,−r) ≥ cos_max` (adaptive-attacker bypass).
+- `build_adv_stealth.py` outputs both `summary.json` and `steering_vector.pt` directly. `--cos_max` adds a hard cap that early-stops the GCG loop once `cos(v,−r) ≥ cos_max` (adaptive-attacker bypass). `--control_frac f` restricts editing to `round(f·N)` randomly-chosen pairs (weaker-attacker ablation; the rest stay clean).
 - `evaluate_asr.py` loads `steering_vector_poisoned` from the `.pt` file by default; `use_clean=true` loads `steering_vector_clean`; `use_defended=true` loads the `*_defended` key produced by `advsteer.defense.orthogonalize_steering`. The two flags compose (clean+defended / poisoned+defended).
 - Override Hydra defaults: `model=`, `attribute=`, `steering_weights=`, `results_path=`. Judge: `judge.provider=`, `judge.model=` (default `anthropic / claude-sonnet-4-5`; alternatives are `together / meta-llama/Llama-3.3-70B-Instruct-Turbo` and `openai / gpt-4.1-mini`).
 - Refusal direction train set and ASR eval set are disjoint (no leakage). The defense recomputes r from the *train* splits — same data the attacker also has — so it does not require fresh held-out prompts.

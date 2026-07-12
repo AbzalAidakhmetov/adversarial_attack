@@ -105,7 +105,13 @@ uv run python scripts/run_defense.py                # refusal-direction orthogon
 uv run python scripts/run_detector.py               # cos(v,-r) detector + adaptive bypass sweep
 uv run python scripts/run_constrained_bypass.py     # constrained adaptive attacker (cos cap)
 uv run python scripts/run_all_steps.py              # all-step protocol (Arditi et al. 2024)
-# SLURM equivalents: slurm/run_{defense,detector,constrained_bypass,all_steps}.sh
+uv run python scripts/run_partial_control.py        # weaker-attacker ablation (controls a fraction of pairs)
+# SLURM equivalents: slurm/run_{defense,detector,constrained_bypass,all_steps,partial_control}.sh
+
+# Cross-model text transfer: attack a source model, ship only the poisoned texts,
+# recompute the vector on a different target, and eval transfer vs clean vs native.
+uv run python scripts/run_cross_transfer.py         # config/transfer.yaml, local sequential
+sbatch --array=0-3 slurm/run_cross_transfer.sh      # SLURM, one task per (combo, seed)
 ```
 
 Per `(cell, seed)`, outputs land under:
@@ -213,13 +219,15 @@ src/advsteer/
     orthogonalize_steering.py      # v_def = v - (v·r̂)r̂ ; writes steering_vector_defended.pt
     stealth_check.py               # LLM-judge audit over original vs poisoned pair texts
     summarize_defense.py           # aggregate clean / poisoned / defended ASR + hAttr
+  transfer/recompute.py            # recompute a target-model vector from the source's poisoned texts
   data.py                          # pair specs, pair loading, refusal-direction computation
   steering.py                      # ATTRIBUTE_CHECK_FNS, steered generation, to_chat
   classifiers.py                   # set_seed, GPT-2 perplexity, LLM judge (litellm-routed)
   orchestration.py                 # shared cell-iteration + SLURM dispatch + subprocess wrapper
-config/                            # matrix.yaml (grid) + per-pipeline Hydra configs
+config/                            # matrix.yaml (grid) + per-pipeline Hydra configs (transfer, partial_control, ...)
 scripts/                           # run_matrix / run_defense / run_detector / run_constrained_bypass
-                                   #   run_all_steps / rejudge_results / aggregate_majority_judge / plots
+                                   #   run_all_steps / run_partial_control / run_cross_transfer
+                                   #   rejudge_results / aggregate_majority_judge / plots
 slurm/                             # *.sh array wrappers for the scripts above
 data/
   pairs/                           # POS/NEG pair datasets, one per attribute

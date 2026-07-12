@@ -1,0 +1,30 @@
+# Cross-model text-transfer pipeline (scripts/run_cross_transfer.py):
+#   attack SOURCE combo -> recompute vector on each TARGET at its layer
+#   -> eval_sweep on TARGET: harmful = ASR (judged), harmless = AC (attribute check).
+# Inherits attack hyperparams + eval settings from matrix.yaml. The harmful judge is
+# config/evaluate_jailbreak.yaml's.
+defaults:
+  - matrix
+  - _self_
+
+# Source model: its pair texts are poisoned, then shipped to the targets.
+source: {name: gemma2b, hf_id: google/gemma-2-2b-it, layer: 14}
+
+# Attributes to attack on the source (the paper's Table-2 set).
+combos: [spanish, lowercase, has_bold_only, french]
+
+# Steering layer per target:
+#   Gemma-2-9B  L22 -- proportional to the source depth (14/26 ~= 22/42)
+#   Llama-3.1-8B L18 -- the paper's Table-2 layer
+targets:
+  - {name: gemma9b, hf_id: google/gemma-2-9b-it,                 layer: 22}
+  - {name: llama31, hf_id: meta-llama/Meta-Llama-3.1-8B-Instruct, layer: 18}
+
+target_weights: [2, 3, 4]    # steering weights swept per (combo, target)
+seeds: [0]                   # GCG seeds to run (e.g. [0, 1, 2])
+transfer_batch_size: 8
+
+# Also attack each target directly (native-attack ceiling) and eval its poisoned
+# vector. Adds one GCG attack per (attribute, target); set false to skip.
+cos_diag: false             # record cos(v,-r) in transfer_stats.json (extra 256-sample forward)
+native_ceiling: true
