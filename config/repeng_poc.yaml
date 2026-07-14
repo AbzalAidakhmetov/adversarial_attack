@@ -1,0 +1,58 @@
+# Real-world case study (reviewer Y355, Comment 2): the attacker-shipped poisoned
+# pair texts run unmodified through the *public* `repeng` steering-vector pipeline
+# (per-layer PCA over a band of layers, added at every decode step) on Gemma-2-2B,
+# vs the clean texts through the same pipeline. Consumed by scripts/repeng_poc.py.
+#
+# Eval prompts + count mirror config/evaluate_jailbreak.yaml and config/matrix.yaml
+# (val_samples=100 for BOTH harmful ASR and harmless AC) so every number is computed
+# on the same prompts, the same way, as the main results.
+#
+# Override on the CLI (Hydra), e.g.:
+#   python scripts/repeng_poc.py combo=spanish seed=0 coeffs=[16,20] val_samples=50
+
+# MODEL
+model: google/gemma-2-2b-it
+
+# POISONED VECTOR SOURCE — an attack summary.json (cross-transfer / matrix run)
+combo: has_bold_only              # attribute the source was attacked on
+seed: 2                           # attack seed
+summary: null                     # explicit summary.json path; null -> `summary_default`
+attribute: null                   # attribute-check fn name; null -> `combo`
+
+# PATHS (same layout as config/evaluate_jailbreak.yaml)
+data_path: ${oc.env:PROJECT_ROOT}/data
+harmful_prompts:  ${data_path}/refusal/harmful_prompts.json
+harmless_prompts: ${data_path}/refusal/harmless_prompts.json
+# Just taking the summary.json from my cross_transfer attack, any summary.json will be valid.
+summary_default: ${oc.env:PROJECT_ROOT}/results/cross_transfer/gemma2b/${combo}/seed${seed}/summary.json
+out_dir: ${oc.env:PROJECT_ROOT}/results/repeng_poc/${combo}_seed${seed}
+
+# REPENG CONTROL VECTOR (its native construction — a different operator from ours)
+layer_band: [-5, -18, -1]         # range(start, stop, step) -> controlled layers (repeng default band)
+method: pca_diff                  # ControlVector.train method: pca_diff | pca_center
+coeffs: [12, 16, 20, 24, 28]              # repeng-native strengths (unit-norm PCA dirs; NOT our alpha in {2,3,4})
+
+# COMPLETIONS
+max_new_tokens: 256
+batch_size: 16
+
+# EVALUATION — identical prompt set + count for harmful (ASR) and harmless (AC).
+# Output mirrors advsteer.eval.evaluate_asr: per (condition, split, weight) a
+# `results_{clean,poisoned}_{harmful,harmless}_w<W>/` dir holding a canonical `results`
+# list (same record schema) + a `refusal_<eval_source>_eval_L*_w*.json`. ASR reads
+# judge_success_rate off the *_harmful dirs, hAttr reads steering_success_rate off *_harmless.
+val_samples: 100
+eval_source: repeng               # labels the refusal_<source>_eval_L*_w*.json files (cosmetic)
+# Single-judge existence proof (paper's 3-judge majority deferred to revision).
+# Providers: anthropic/claude-sonnet-4-5 | together/meta-llama/Llama-3.3-70B-Instruct-Turbo | openai/gpt-4.1-mini
+judge:
+  provider: together
+  model: meta-llama/Llama-3.3-70B-Instruct-Turbo
+  concurrency: 10
+
+device: cuda
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
