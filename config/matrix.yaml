@@ -19,6 +19,15 @@ models:
     hf_id: Qwen/Qwen2.5-32B-Instruct
     layer: 36
     device_map: auto
+  # Llama-3.1-70B has 80 hidden layers; L45 = 56.25% depth, the same mid-stack
+  # fraction as Llama-3.1-8B (L18/32) and Qwen2.5-32B (L36/64). Confirmed by
+  # slurm/probe_llama70b.sh. ~141 GB bf16 weights -> device_map: auto shards
+  # across a full node of 4x A100 64GB. Submit via slurm/run_llama70b.sh
+  # (--gres=gpu:4 --mem=480G, cells 36-47).
+  - name: llama70b
+    hf_id: meta-llama/Meta-Llama-3.1-70B-Instruct
+    layer: 45
+    device_map: auto
 
 attributes:
   - spanish
