@@ -197,6 +197,52 @@ def build_safe_vocab_mask(tokenizer, vocab_size: int, device: str, safe_vocab_js
 
 
 # ---------------------------------------------------------------------------
+# Steering-vector readout (how a direction is derived from paired POS/NEG states)
+# ---------------------------------------------------------------------------
+
+STEER_METHODS = ("mean_diff", "hyperplane")
+
+
+def steering_direction(h_pos: torch.Tensor, h_neg: torch.Tensor,
+                       method: str = "mean_diff") -> torch.Tensor:
+    """Derive a steering vector from paired POS/NEG hidden states.
+
+    `h_pos` and `h_neg` are ``(N, d)`` stacks, paired row-by-row (row i of
+    `h_pos` is the POS partner of row i of `h_neg`). Returns a 1-D ``(d,)``
+    direction on the inputs' device/dtype.
+
+    method="mean_diff":
+        Cluster-mean difference ``mean(h_pos) - mean(h_neg)`` — RepE's
+        ``ClusterMeanRepReader`` and the Arditi/CAA convention. Not unit-norm;
+        magnitude carries the class separation. This reproduces the existing
+        steering vector exactly.
+
+    method="hyperplane":
+        The normal of the linear hyperplane separating the two classes — RepE's
+        default ``PCARepReader`` reading direction (Zou et al. 2023,
+        *representation-engineering*). The top principal component of the
+        recentered paired differences ``h_pos - h_neg``, sign-oriented so POS
+        projects higher than NEG. Returned unit-norm (SVD right singular vector).
+    """
+    assert h_pos.ndim == 2 and h_neg.ndim == 2, "expected (N, d) stacks"
+    assert h_pos.shape == h_neg.shape, "POS/NEG stacks must be paired and equal-length"
+    if method == "mean_diff":
+        return h_pos.mean(0) - h_neg.mean(0)
+    if method == "hyperplane":
+        diffs = (h_pos - h_neg).float()
+        diffs = diffs - diffs.mean(0, keepdim=True)           # recenter (RepE)
+        # Top principal component = top right singular vector of the centered
+        # differences. torch.linalg.svd returns Vh with rows = components.
+        _, _, vh = torch.linalg.svd(diffs, full_matrices=False)
+        d = vh[0]
+        # Sign via class labels: orient so POS projects higher than NEG.
+        if (h_pos.float() @ d).mean() < (h_neg.float() @ d).mean():
+            d = -d
+        return d.to(h_pos.dtype)
+    raise ValueError(f"Unknown steer_method '{method}'. Supported: {STEER_METHODS}")
+
+
+# ---------------------------------------------------------------------------
 # Hidden state extraction
 # ---------------------------------------------------------------------------
 
