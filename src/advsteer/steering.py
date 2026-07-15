@@ -330,12 +330,20 @@ ATTRIBUTE_CHECK_FNS = {
 
 
 def evaluate_steering(completions, attribute):
-    check_fn = ATTRIBUTE_CHECK_FNS.get(attribute)
+    check_attr = attribute
+    check_fn = ATTRIBUTE_CHECK_FNS.get(check_attr)
+    if check_fn is None and check_attr.endswith("_aug"):
+        # Dataset-variant pair types (e.g. 'spanish_aug', built by
+        # scripts/gen_augmented_pairs.py) reuse the base attribute's compliance
+        # check ('spanish'): the check tests the response text, which is
+        # identical across dataset variants of the same attribute.
+        check_attr = check_attr[:-len("_aug")]
+        check_fn = ATTRIBUTE_CHECK_FNS.get(check_attr)
     if check_fn is None:
         raise ValueError(f"Unknown attribute '{attribute}'. Supported: {sorted(ATTRIBUTE_CHECK_FNS)}")
 
     total = len(completions)
-    if attribute == 'repeat_prompt':
+    if check_attr == 'repeat_prompt':
         successful = sum(check_fn(c['response'], c['prompt']) for c in completions)
     else:
         successful = sum(check_fn(c['response']) for c in completions)

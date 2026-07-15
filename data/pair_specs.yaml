@@ -187,6 +187,26 @@ has_bold_only:
   instruction_id: format:has_bold_only
   exact_match: true
   template_suffix_pos: ' Use bold (**text**) emphasis at least three times in your response.'
+# Augmented supersets (22 original + 30 new shared bodies = 52 pairs), built by
+# scripts/gen_augmented_pairs.py, for the num_pairs / more-samples ablation.
+spanish_aug:
+  path_parts:
+  - spanish_aug_pairs.jsonl
+  instruction_id: language:spanish
+  exact_match: true
+  template_suffix_pos: ' Respond entirely in Spanish.'
+french_aug:
+  path_parts:
+  - french_aug_pairs.jsonl
+  instruction_id: language:french
+  exact_match: true
+  template_suffix_pos: ' Respond entirely in French.'
+has_bold_only_aug:
+  path_parts:
+  - has_bold_only_aug_pairs.jsonl
+  instruction_id: format:has_bold_only
+  exact_match: true
+  template_suffix_pos: ' Use bold (**text**) emphasis at least three times in your response.'
 polish:
   path_parts:
   - polish_pairs.jsonl
