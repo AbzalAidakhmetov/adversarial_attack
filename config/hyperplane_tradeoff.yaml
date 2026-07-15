@@ -1,0 +1,28 @@
+# Hyperplane alignment/attribute trade-off sweep.
+#
+# The magnitude-matched hyperplane (PCA) poisoned vector jailbreaks strongly but
+# collapses attribute compliance, because at high cos(v,-refusal) the injected
+# refusal signal dominates the top principal component. This sweeps the attack's
+# alignment target via --cos_max (early-stop once cos(v,-r) >= cap) to trace the
+# ASR vs hAttr frontier: does a lower-alignment poisoned PCA vector keep decent
+# ASR while recovering hAttr?
+#
+# Per (model, attr, cap): attack hyperplane with cos_max=cap, rescale to the
+# cell's mean_diff norm (magnitude match), eval poisoned ASR + hAttr at `weights`.
+# Consumed by scripts/run_hyperplane_tradeoff.py (SLURM: run_hyperplane_tradeoff.sh).
+defaults:
+  - matrix
+  - _self_
+
+steer_method: hyperplane
+caps: [0.25, 0.35, 0.45, 0.55]
+weights: [3]            # single matched weight keeps judge-API cost down
+
+models:
+  - name: gemma
+    hf_id: google/gemma-2-2b-it
+    layer: 14
+
+attributes:
+  - spanish
+  - french
