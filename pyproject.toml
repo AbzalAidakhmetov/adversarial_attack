@@ -134,6 +134,7 @@ dependencies = [
     "sniffio>=1.3.1",
     "stack-data>=0.6.3",
     "starlette>=0.37.2",
+    "steering-vectors==0.12.2",
     "sympy>=1.12.1",
     "tiktoken>=0.7.0",
     "together>=1.3.0",
@@ -166,3 +167,13 @@ dependencies = [
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["advsteer*"]
+
+[tool.pytest.ini_options]
+markers = [
+    "slow: end-to-end tests that need CUDA + the Llama-3.1-8B weights",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
