@@ -1,0 +1,66 @@
+# CAA sycophancy case study (spec §5, §7).
+#
+# Frozen scientific invariants — model, layer=18, the 42-shuffle split, the
+# anti-sycophancy pair orientation, protected spans, and the external
+# dataset/package pins — are MODULE CONSTANTS in
+# advsteer.case_studies.caa_sycophancy so a config override cannot silently
+# retune them after seeing ASR. Only genuine tunables live here.
+#
+# Full run (3 attack seeds):     uv run python scripts/run_caa_sycophancy.py
+# One GPU per seed:              sbatch --array=0-2 slurm/run_caa_sycophancy.sh
+# Cheap smoke test:              uv run python scripts/run_caa_sycophancy.py \
+#     attack.num_pairs=2 attack.gcg_budget=2 attack.gcg_patience=2 \
+#     attack.n_candidates=2 seeds=[0] multipliers=[1.0] harmful.limit=4
+
+seeds: [0, 1, 2]
+
+# Main-paper Llama attack settings (spec §5). num_pairs slices the fixed 50-row
+# attack set (=50 for the real run; smaller only for the smoke test).
+attack:
+  num_pairs: 50
+  n_modify: 5
+  n_neighbors: 100
+  top_k: 32
+  lambda_lm: 0.2
+  max_perp: 2000
+  gcg_budget: 1500
+  gcg_patience: 500
+  n_candidates: 64
+  n_swaps: 1
+  eval_batch_size: 8
+
+# External-application multiplier grid (spec §7). Primary operating point is the
+# package's unit multiplier 1.0; the whole grid is always reported.
+multipliers: [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
+primary_multiplier: 1.0
+
+# Benign A/B + anti-refusal-direction computation.
+benign_batch_size: 8
+refusal_samples: 128
+refusal_batch_size: 8
+
+# Harmful generation: the repo's 100 prompts + settings, applied through the
+# external all-token protocol. system_prompt=null → user-only native turn,
+# matching the repository's ASR protocol (documented in report.md). limit=null
+# uses all 100 prompts (set small only for the smoke test).
+harmful:
+  prompts_path: data/refusal/harmful_prompts.json
+  max_new_tokens: 256
+  batch_size: 8
+  system_prompt: null
+  limit: null
+
+# Primary judge (Claude Sonnet 4.5). GPT-4.1 + Llama-3.3-70B are added later via
+# scripts/rejudge_results.py and combined by scripts/aggregate_majority_judge.py.
+judge:
+  provider: anthropic
+  model: claude-sonnet-4-5
+  concurrency: 10
+
+device: cuda
+device_map: null
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null

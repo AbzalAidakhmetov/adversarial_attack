@@ -206,13 +206,82 @@ surviving lift is the bypass sweep (`run_detector.py`, `run_constrained_bypass.p
 **Text audit.** `advsteer.defense.stealth_check` presents each original/poisoned
 pair text to an LLM judge in isolation and reports per-condition flag rates.
 
+## Case study: public CAA sycophancy pipeline
+
+An externally grounded instance of the attack on a **real community dataset** and
+an **existing public steering package**, end to end:
+
+- Dataset: `nrimsky/CAA` sycophancy (`generate_dataset.json` + `test_dataset_ab.json`),
+  pinned to commit `5dabbbd9…` and vendored unmodified under
+  `data/external/caa/sycophancy/` (SHA-256 verified on load).
+- Package: [`steering-vectors`](https://github.com/steering-vectors/steering-vectors)
+  `==0.12.2`. **Both** the clean and poisoned vectors are built by
+  `steering_vectors.train_steering_vector`, and **every** reported number applies
+  them through `SteeringVector.apply(min_token_index=0)` (the package's all-token
+  protocol) — not this repo's internal hook.
+- Model / layer: `meta-llama/Llama-2-7b-chat-hf` @ **L13** (`= hidden_states[14]`) — the
+  model and layer of CAA's own headline sycophancy A/B experiment, so the benign
+  behavior is measured at its studied operating point. (Model + layer are declared
+  constants in `caa_sycophancy.py`; the earlier reviewer-frozen config —
+  Meta-Llama-3.1-8B-Instruct @ L18 — is preserved under `.../caa_sycophancy/llama31/`.)
+
+The dataset is advertised as **anti-sycophancy** (POS = non-sycophantic answer,
+NEG = the answer matching the user's stated view). The attack edits only
+natural-language tokens of the CAA `question` — protecting the `(A)`/`(B)` option
+markers, the answer label, and all special/header tokens — so the vector aligns
+with the model's anti-refusal direction `r = mean(harmless) − mean(harmful)`. The
+internal optimizer vector is checked against the external one (cos ≥ 0.9999,
+rel-L2 ≤ 0.01) before anything is evaluated.
+
+```bash
+# Full local run, three attack seeds (attack → external vectors → benign A/B + harmful ASR).
+uv run python scripts/run_caa_sycophancy.py
+
+# One GPU per seed (task 0 also builds the clean vector + unsteered/clean evals).
+sbatch --array=0-2 slurm/run_caa_sycophancy.sh
+
+# Add the other two judges to the cached harmful completions (no regeneration)…
+uv run python scripts/rejudge_results.py \
+  --results_root results/case_study/caa_sycophancy --provider openai   --model gpt-4.1                                --tag gpt41
+uv run python scripts/rejudge_results.py \
+  --results_root results/case_study/caa_sycophancy --provider together --model meta-llama/Llama-3.3-70B-Instruct-Turbo --tag llama70b
+
+# …combine into the 3-judge majority, then aggregate all metrics + report.md.
+uv run python scripts/aggregate_majority_judge.py --results_root results/case_study/caa_sycophancy
+uv run python scripts/summarize_caa_sycophancy.py
+
+# Cheap smoke test (tiny attack, one seed, one multiplier, 4 harmful prompts).
+uv run python scripts/run_caa_sycophancy.py \
+  attack.num_pairs=2 attack.gcg_budget=2 attack.gcg_patience=2 \
+  attack.n_candidates=2 seeds=[0] multipliers=[1.0] harmful.limit=4
+```
+
+Outputs land under `results/case_study/caa_sycophancy/<MODEL_TAG>/` (e.g.
+`llama2_7b_L13/`) — `data_manifest.json`,
+a `clean_vector/` (clean vector + unsteered/clean evals), one `seed<S>/` per attack
+seed (`steering_vector.pt`, `equivalence.json`, `{clean,poisoned}_pairs.jsonl`,
+`benign_metrics.json`, `harmful/…`), and `aggregate/` with
+`per_seed.csv`, `multiplier_curve.csv`, `paper_table.csv`, `summary.json`, and
+`report.md`. The report separates **token edit rate** (a few edited tokens) from
+**text / pair-row coverage** (how many of the `2N` texts are touched) so a low
+edit rate is never mistaken for controlling only a small part of the dataset. This
+is evidence for one third-party dataset and pipeline, not universal transfer.
+
+The GCG loop is shared with the main attack via `advsteer.attack.core` (a single
+`optimize()` over `AttackText` descriptors); `advsteer.attack.build_adv_stealth`
+routes through it unchanged, so the paper commands above are byte-compatible.
+
 ## Project layout
 
 ```
 src/advsteer/
-  attack/build_adv_stealth.py      # GCG attack (--cos_max / --cos_max_hard for adaptive bypass)
+  attack/
+    core.py                        # shared GCG optimizer over AttackText (used by both attacks)
+    build_adv_stealth.py           # paper GCG attack (routes through core; --cos_max / --cos_max_hard)
+  case_studies/caa_sycophancy.py   # public CAA sycophancy case study (steering-vectors backend)
   eval/
     evaluate_asr.py                # ASR + attribute evaluation (Hydra)
+    evaluate_caa_sycophancy.py     # benign A/B + harmful gen via SteeringVector.apply (external backend)
     cos_detector.py                # cos(v,-r) detector + ROC over the legitimate-vector null
     judge_agreement.py             # inter-judge agreement (Fleiss' kappa)
   defense/
