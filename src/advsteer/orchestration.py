@@ -72,7 +72,8 @@ def run_subprocess(cmd: list[str], *, log: Path, tag: str) -> int:
 def attack_cmd(cfg, model, attr: str, out_dir: Path,
                *, seed: int = 0, cos_max: float | None = None,
                cos_max_hard: float | None = None,
-               control_frac: float | None = None) -> list[str]:
+               control_frac: float | None = None,
+               steer_method: str | None = None) -> list[str]:
     a = cfg.attack
     cmd = [
         "uv", "run", "python", "-m", "advsteer.attack.build_adv_stealth",
@@ -99,6 +100,8 @@ def attack_cmd(cfg, model, attr: str, out_dir: Path,
         cmd += ["--cos_max_hard", str(cos_max_hard)]
     if control_frac is not None:
         cmd += ["--control_frac", str(control_frac)]
+    if steer_method is not None:
+        cmd += ["--steer_method", str(steer_method)]
     device_map = getattr(model, "device_map", None)
     if device_map:
         cmd += ["--device_map", str(device_map)]

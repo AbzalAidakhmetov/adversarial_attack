@@ -1,0 +1,31 @@
+# Hyperplane (RepE PCA reading-direction) steering method experiment.
+#
+# Runs the same GCG attack as the matrix, but the *attribute* steering vector is
+# read out as the normal of the linear hyperplane separating the POS/NEG
+# classes — the top principal component of the recentered paired differences
+# (Zou et al. 2023, representation-engineering, PCARepReader) — instead of the
+# mean-difference (ClusterMeanRepReader) readout the matrix uses. The refusal
+# *target* direction stays mean-difference.
+#
+# Consumed by scripts/run_hyperplane.py (SLURM: slurm/run_hyperplane.sh).
+# Outputs land in results/<model>/<attr>/seed<S>/hyperplane/ so nothing
+# collides with the mean-difference matrix.
+defaults:
+  - matrix
+  - _self_
+
+# How the attribute steering vector is read out of paired POS/NEG hidden states
+# (both the GCG objective and the saved clean/poisoned vectors). Plumbed to
+# build_adv_stealth's --steer_method via orchestration.attack_cmd.
+steer_method: hyperplane
+
+# Restrict to the two main models (overridable via Hydra CLI). The full matrix
+# also includes the expensive qwen25 / llama70b cells, which this ablation skips
+# by default.
+models:
+  - name: gemma
+    hf_id: google/gemma-2-2b-it
+    layer: 14
+  - name: llama31
+    hf_id: meta-llama/Meta-Llama-3.1-8B-Instruct
+    layer: 18

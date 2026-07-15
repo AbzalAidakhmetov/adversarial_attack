@@ -8,14 +8,14 @@ Package layout (PEP 621 + src layout, `advsteer` distribution):
 
 ```
 src/advsteer/
-  attack/build_adv_stealth.py        # The attack (GCG over pair-text tokens; --cos_max for adaptive bypass)
+  attack/build_adv_stealth.py        # The attack (GCG over pair-text tokens; --cos_max bypass; --steer_method mean_diff|hyperplane)
   eval/evaluate_asr.py               # ASR evaluation (Hydra)
   eval/cos_detector.py               # cos(v,-r) detector + null-distribution sweep (defender)
   defense/orthogonalize_steering.py  # v_def = v - (v·r̂)r̂; writes steering_vector_defended.pt
   defense/stealth_check.py           # LLM-judge stealth audit over original vs poisoned pair texts
   defense/summarize_defense.py       # aggregate clean/poisoned/defended ASR + hAttr across results
   transfer/recompute.py              # recompute a target-model vector from the source's poisoned texts (-m worker)
-  data.py                            # Pair specs, data loading, vocab, hidden states, refusal direction
+  data.py                            # Pair specs, data loading, vocab, hidden states, refusal + steering_direction (mean_diff/hyperplane readout)
   steering.py                        # Steered generation (prefill + all_steps), attribute checks, to_chat
   classifiers.py                     # set_seed, GPT-2 perplexity, LLM judge (litellm; Claude Sonnet 4.5 default)
 
@@ -28,6 +28,7 @@ config/all_steps.yaml                # defaults: [matrix, _self_]; overrides wei
 config/detector.yaml                 # defaults: [matrix, _self_]; adds caps for the bypass sweep
 config/transfer.yaml                 # defaults: [matrix, _self_]; source + targets + layers for cross-model transfer
 config/partial_control.yaml          # defaults: [matrix, _self_]; control_fracs + per-attr weights for the ablation
+config/hyperplane.yaml               # defaults: [matrix, _self_]; steer_method=hyperplane, gemma+llama31 only
 
 scripts/run_matrix.py                # attack + eval sweep per cell                  → slurm/run_matrix.sh
 scripts/run_cross_transfer.py        # attack source → recompute on targets → eval (config/transfer.yaml)  → slurm/run_cross_transfer.sh
@@ -35,6 +36,7 @@ scripts/run_partial_control.py       # partial-dataset-control ablation         
 scripts/run_defense.py               # orthogonalize + use_defended eval sweep       → slurm/run_defense.sh
 scripts/run_all_steps.py             # all_steps-protocol eval at lower weights      → slurm/run_all_steps.sh
 scripts/run_detector.py              # (A) static cos-detector + (B) cos_max bypass  → slurm/run_detector.sh
+scripts/run_hyperplane.py            # attack + eval with hyperplane (RepE PCA) readout → slurm/run_hyperplane.sh
 
 results/                             # Saved attack vectors + Hydra eval outputs, one subdir per cell
 ```
@@ -65,6 +67,10 @@ sbatch --array=0,4 slurm/run_matrix.sh
 # Single-attack one-off (Hydra CLI overrides):
 uv run python scripts/run_matrix.py models='[{name: gemma, hf_id: google/gemma-2-2b-it, layer: 14}]' attributes=[spanish] weights=[3] seeds=[0]
 
+# Hyperplane (RepE PCA reading-direction) readout instead of mean-difference:
+uv run python scripts/run_hyperplane.py            # gemma+llama31 × 4 attrs × seeds
+sbatch --array=0-23 slurm/run_hyperplane.sh        # one GPU per (cell, seed)
+
 # Manual single attack / eval (bypassing the matrix orchestrator):
 uv run python -m advsteer.attack.build_adv_stealth \
   --model google/gemma-2-2b-it --layer 14 --pair_type spanish --num_pairs 20 \
@@ -88,6 +94,7 @@ results/<model>/<attr>/seed<S>/
   results_defense_{clean,poisoned}_{harmful,harmless}_w<W>/      # run_defense.py
   all_steps/results_{clean,poisoned}_{harmful,harmless}_w<W>/    # run_all_steps.py
   cap<CAP>/steering_vector.pt + results_poisoned_*_w<W>/         # run_detector.py
+  hyperplane/steering_vector.pt + results_{clean,poisoned}_*_w<W>/  # run_hyperplane.py
 ```
 The matrix dim is models × attributes × seeds. Default `seeds: [0, 1, 2]` in `config/matrix.yaml`; override per submission (`sbatch ... slurm/run_matrix.sh seeds=[1,2]`).
 Every step is restartable: attack skips if `steering_vector.pt` exists, orthogonalize skips if `steering_vector_defended.pt` exists, each eval skips if its `results` file exists.
@@ -163,9 +170,37 @@ has_bold_only) × `control_fracs=[0.25,0.5,0.75,1.0]`. `--control_frac` is plumb
 1 model × 2 attrs × 3 seeds); index = `itertools.product(models, attributes, seeds)` with seed
 fastest.
 
+## Hyperplane steering method (run_hyperplane.py)
+
+Ablation over the *steering-vector readout*. The matrix derives the attribute
+vector as a mean-difference `v = mean(h⁺) − mean(h⁻)` (RepE's `ClusterMeanRepReader`,
+Arditi/CAA convention). This experiment reruns the same GCG attack but reads the
+vector out as the **normal of the linear hyperplane** separating the two classes —
+RepE's default `PCARepReader` reading direction (Zou et al. 2023,
+*representation-engineering*): the top principal component of the recentered paired
+differences `h⁺ − h⁻`, sign-oriented so POS projects higher than NEG. It answers
+"does the poisoning attack still work if the victim reads the vector out with PCA
+instead of mean-difference?" The refusal *target* direction stays mean-difference.
+
+The readout lives in one place, `advsteer.data.steering_direction(h_pos, h_neg,
+method)`, called by both the GCG loop (`attack/core.py`, `OptConfig.steer_method`)
+and the clean/poisoned save in `build_adv_stealth.py` (`--steer_method`). Under
+`hyperplane` the loop can't maintain `steer` incrementally, so it recomputes the
+direction from the full stacks each candidate/accept; the GCG *gradient* stays a
+mean-difference proposal heuristic (it only ranks which neighbor tokens to try —
+acceptance is greedy on the exact hyperplane cos, so the true objective still
+improves monotonically). `config/hyperplane.yaml` (`defaults: [matrix]`) sets
+`steer_method: hyperplane` and restricts to gemma-2b L14 + Llama-3.1-8B L18.
+`--steer_method` is plumbed through `orchestration.attack_cmd` → `build_adv_stealth`.
+Outputs: `results/<model>/<attr>/seed<S>/hyperplane/{steering_vector.pt,
+results_{clean,poisoned}_{harmful,harmless}_w<W>/}`. Restartable (skip-if-exists).
+**SLURM:** one task per cell — `sbatch --array=0-23 slurm/run_hyperplane.sh`
+(2 models × 4 attrs × 3 seeds, seed fastest); seed-0-only is
+`sbatch --array=0-7 slurm/run_hyperplane.sh seeds=[0]`.
+
 ## Key Notes
 
-- `build_adv_stealth.py` outputs both `summary.json` and `steering_vector.pt` directly. `--cos_max` adds a hard cap that early-stops the GCG loop once `cos(v,−r) ≥ cos_max` (adaptive-attacker bypass). `--control_frac f` restricts editing to `round(f·N)` randomly-chosen pairs (weaker-attacker ablation; the rest stay clean).
+- `build_adv_stealth.py` outputs both `summary.json` and `steering_vector.pt` directly. `--cos_max` adds a hard cap that early-stops the GCG loop once `cos(v,−r) ≥ cos_max` (adaptive-attacker bypass). `--control_frac f` restricts editing to `round(f·N)` randomly-chosen pairs (weaker-attacker ablation; the rest stay clean). `--steer_method {mean_diff,hyperplane}` selects the steering-vector readout (default `mean_diff`; `hyperplane` = RepE PCA reading direction) for both the GCG objective and the saved clean/poisoned vectors — see the hyperplane section above.
 - `evaluate_asr.py` loads `steering_vector_poisoned` from the `.pt` file by default; `use_clean=true` loads `steering_vector_clean`; `use_defended=true` loads the `*_defended` key produced by `advsteer.defense.orthogonalize_steering`. The two flags compose (clean+defended / poisoned+defended).
 - Override Hydra defaults: `model=`, `attribute=`, `steering_weights=`, `results_path=`. Judge: `judge.provider=`, `judge.model=` (default `anthropic / claude-sonnet-4-5`; alternatives are `together / meta-llama/Llama-3.3-70B-Instruct-Turbo` and `openai / gpt-4.1-mini`).
 - Refusal direction train set and ASR eval set are disjoint (no leakage). The defense recomputes r from the *train* splits — same data the attacker also has — so it does not require fresh held-out prompts.
