@@ -137,19 +137,62 @@ def _load_safe_vocab_word_set(safe_vocab_arg: str) -> set:
         return set(json.load(f))
 
 
+_METASPACE = ("▁", "Ġ")
+
+
+def decode_strips_leading_space(tokenizer) -> bool:
+    """True for tokenizers whose ``decode()`` of a single word-initial token drops
+    the leading space (e.g. Llama-2 SentencePiece) — for those the leading-space
+    marker lives on the raw piece (``convert_ids_to_tokens``, '▁'/'Ġ'). False for
+    byte-level tokenizers (GPT-2 / Llama-3 / Gemma) where decode keeps the space,
+    so the existing decode-based path is used unchanged.
+    """
+    ids = tokenizer.encode(" the", add_special_tokens=False)
+    return bool(ids) and not tokenizer.decode([ids[-1]]).startswith(" ")
+
+
+def token_has_leading_space(tokenizer, tid: int, strips: bool) -> bool:
+    """Whether token `tid` begins a new word (leading space / metaspace)."""
+    if strips:
+        piece = tokenizer.convert_ids_to_tokens(int(tid))
+        return isinstance(piece, str) and piece[:1] in _METASPACE
+    return tokenizer.decode([int(tid)]).startswith((" ", "▁", "Ġ"))
+
+
+def _leading_space_word(tokenizer, tid: int, strips: bool):
+    """The alphabetic word carried by a leading-space token, or None."""
+    if strips:
+        piece = tokenizer.convert_ids_to_tokens(int(tid))
+        if not (isinstance(piece, str) and piece[:1] in _METASPACE):
+            return None
+        word = piece[1:]
+    else:
+        decoded = tokenizer.decode([int(tid)])
+        if not decoded.startswith(" "):
+            return None
+        word = decoded[1:]
+    return word if word.isalpha() else None
+
+
 def build_safe_vocab_mask(tokenizer, vocab_size: int, device: str, safe_vocab_json: str = "safe_vocab.json") -> torch.Tensor:
-    """Build a boolean mask of safe vocabulary tokens."""
+    """Boolean mask of safe (leading-space, alphabetic, allow-listed) vocab tokens.
+
+    Handles both byte-level tokenizers (decode keeps the leading space) and
+    SentencePiece tokenizers like Llama-2 (decode strips it; the '▁' lives on the
+    raw piece). For byte-level tokenizers this is byte-identical to the previous
+    decode-only implementation.
+    """
     safe_words = {w.lower() for w in _load_safe_vocab_word_set(safe_vocab_json)}
+    strips = decode_strips_leading_space(tokenizer)
     mask = torch.zeros(vocab_size, dtype=torch.bool)
     allowed = 0
     for tid in range(vocab_size):
-        decoded = tokenizer.decode([tid])
-        if not decoded.startswith(" "): continue
-        word = decoded[1:]
-        if not word.isalpha(): continue
-        if word.lower() not in safe_words: continue
+        word = _leading_space_word(tokenizer, tid, strips)
+        if word is None or word.lower() not in safe_words:
+            continue
         mask[tid] = True; allowed += 1
-    print(f"Safe vocab mask ({safe_vocab_json}): {allowed}/{vocab_size} tokens allowed")
+    kind = "sentencepiece" if strips else "byte-level"
+    print(f"Safe vocab mask ({safe_vocab_json}): {allowed}/{vocab_size} tokens allowed ({kind})")
     return mask.to(device)
 
 
