@@ -23,7 +23,7 @@
 #SBATCH --mem=60G
 #SBATCH --partition=boost_usr_prod
 #SBATCH --gres=gpu:1
-#SBATCH --account=IscrC_TVU
+#SBATCH --account=IscrC_SIMP
 
 set -uo pipefail
 module load cuda/12.2
