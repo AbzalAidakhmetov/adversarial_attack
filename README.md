@@ -1,7 +1,11 @@
 # Steering Vectors are an Adversarial Attack Surface
 
 Code for the paper **"Steering Vectors are an Adversarial Attack Surface"**
-(Aidakhmetov, Crisostomi, Mencattini, Minut, Masi, Rodolà), [arXiv:2606.05958](https://arxiv.org/abs/2606.05958).
+(Aidakhmetov, Crisostomi, Mencattini, Minut, Masi, Rodolà), published in
+**Findings of the Association for Computational Linguistics: EMNLP 2026**
+([ACL Anthology](https://aclanthology.org/2026.findings-emnlp.2040/), the latest
+version; the [arXiv preprint](https://arxiv.org/abs/2606.05958) is superseded
+by the published ACL version).
 
 Activation steering lets users control an LLM by adding a precomputed *steering
 vector* — a mean-difference of hidden states over contrastive POS/NEG text pairs
@@ -16,16 +20,20 @@ paraphrases, so the payload survives even a bundle that ships the texts, the
 vector, a recommended weight, and a cryptographic equivalence certificate the
 user can re-derive.
 
-> **Headline.** Poisoned vectors reach an absolute attack success rate (ASR) of
-> **0.20–0.55** (**+19 to +51 pp** over a clean reference) while leaving the
-> declared steering effect on benign prompts essentially unchanged on seven of
-> eight combos; a refusal-direction orthogonalization defense recovers **≈82%**
-> of the ASR gap without harming benign behavior.
+> **Headline.** Replacing only **4–6% of the pair-text tokens** is enough to
+> poison the resulting vector. Poisoned vectors reach an absolute attack success
+> rate (ASR) of **0.20–0.55** (**+19 to +51 pp** over a clean reference) while
+> leaving the declared steering effect on benign prompts essentially unchanged
+> on seven of eight combos. The vulnerability persists at **70B scale**: the
+> poisoned pair texts transfer across models, and recomputing the target-model
+> vector from those texts preserves the attack. A refusal-direction
+> orthogonalization defense recovers **≈82%** of the ASR gap without harming
+> benign behavior.
 
 **Full results — all 8 model·attribute combos, 3 seeds (± std), the three-judge
 ensemble, and the defense/detection analysis — are in the paper** (Figures 2–4,
 Table 1, Appendices D–F). This README covers *what the code does and how to run
-it*; the paper is the source of record for the numbers.
+it*; the published paper is the source of record for the numbers.
 
 ## Threat model (paper §3)
 
@@ -239,11 +247,18 @@ results/                          # attack vectors + Hydra eval outputs (one sub
 ## Citation
 
 ```bibtex
-@article{aidakhmetov2026steering,
+@inproceedings{aidakhmetov-etal-2026-steering,
   title   = {Steering Vectors are an Adversarial Attack Surface},
   author  = {Aidakhmetov, Abzal and Crisostomi, Donato and Mencattini, Tommaso
              and Minut, Adrian Robert and Masi, Iacopo and Rodol{\`a}, Emanuele},
-  journal = {arXiv preprint arXiv:2606.05958},
-  year    = {2026}
+  booktitle = {Findings of the Association for Computational Linguistics:
+               EMNLP 2026},
+  pages   = {43420--43439},
+  year    = {2026},
+  month   = {October},
+  address = {Budapest, Hungary},
+  publisher = {Association for Computational Linguistics},
+  url     = {https://aclanthology.org/2026.findings-emnlp.2040/},
+  doi     = {10.18653/2026.findings-emnlp.2040}
 }
 ```
