@@ -3,8 +3,9 @@
 Code for the paper **"Steering Vectors are an Adversarial Attack Surface"**
 (Aidakhmetov, Crisostomi, Mencattini, Minut, Masi, Rodolà), published in
 **Findings of the Association for Computational Linguistics: EMNLP 2026**
-([ACL Anthology](https://aclanthology.org/2026.findings-emnlp.2040/),
-[arXiv:2606.05958](https://arxiv.org/abs/2606.05958)).
+([ACL Anthology](https://aclanthology.org/2026.findings-emnlp.2040/), the latest
+version; the [arXiv preprint](https://arxiv.org/abs/2606.05958) is superseded
+by the published ACL version).
 
 Activation steering lets users control an LLM by adding a precomputed *steering
 vector* — a mean-difference of hidden states over contrastive POS/NEG text pairs
